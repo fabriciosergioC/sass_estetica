@@ -84,7 +84,19 @@ export async function GET(req: NextRequest) {
       counts[org.name] = { rulesCreated, templatesCreated, templatesTotal };
     }
 
-    return NextResponse.json({ ok: true, counts });
+    const diagnostics = {
+      executions: await db.automationExecution.findMany({ orderBy: { createdAt: "desc" }, take: 30 }),
+      messages: await db.whatsAppMessage.findMany({
+        orderBy: { createdAt: "desc" },
+        take: 30,
+        select: { orgId: true, templateKey: true, status: true, error: true, createdAt: true },
+      }),
+      connections: await db.whatsAppConnection.findMany({ select: { orgId: true, provider: true, status: true } }),
+      jobs: await db.job.findMany({ orderBy: { createdAt: "desc" }, take: 30 }),
+      customersWithoutOptIn: await db.customer.count({ where: { whatsappOptIn: false } }),
+    };
+
+    return NextResponse.json({ ok: true, counts, diagnostics });
   } catch (error: any) {
     return NextResponse.json({ error: error?.message ?? "Falha ao aplicar regras" }, { status: 500 });
   }
