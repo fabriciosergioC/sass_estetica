@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 import { localDateTime } from "@/lib/datetime";
-import { localDateTime } from "@/lib/datetime";
 import { db } from "@/lib/db";
 import { handleApiError } from "@/lib/api";
 import { createAppointment } from "@/modules/scheduling/appointments";
