@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { ThemeMenu } from "@/components/theme";
+import { Dialog } from "@/components/dialog";
 import { isBookingPreview } from "@/lib/nav";
 import type { Role } from "@/lib/auth/permissions";
 
@@ -54,6 +55,10 @@ export function Sidebar({ user }: { user: ShellUser }) {
   // O servidor responde com a flag lida da conta, então a etiqueta aparece sem precisar relogar.
   const [superAdmin, setSuperAdmin] = useState<boolean | null>(null);
   const [orgsError, setOrgsError] = useState(false);
+  const [pendingOrg, setPendingOrg] = useState<OrgOption | null>(null);
+  const [switchPassword, setSwitchPassword] = useState("");
+  const [switchError, setSwitchError] = useState("");
+  const [switching, setSwitching] = useState(false);
 
   const items = NAV.filter((item) => item.roles.includes(user.role));
 
@@ -95,14 +100,36 @@ export function Sidebar({ user }: { user: ShellUser }) {
     }
   }
 
-  async function switchOrg(orgId: string) {
+  function requestOrgSwitch(option: OrgOption) {
     setSwitcherOpen(false);
-    await fetch("/api/auth/switch-org", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ orgId }),
-    });
-    router.refresh();
+    if (option.orgId === user.activeOrgId) return;
+    setSwitchPassword("");
+    setSwitchError("");
+    setPendingOrg(option);
+  }
+
+  async function confirmOrgSwitch() {
+    if (!pendingOrg || switching) return;
+    setSwitching(true);
+    setSwitchError("");
+    try {
+      const res = await fetch("/api/auth/switch-org", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ orgId: pendingOrg.orgId, password: switchPassword }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setSwitchError(data.error || "Não foi possível trocar de empresa.");
+        return;
+      }
+      setPendingOrg(null);
+      router.refresh();
+    } catch {
+      setSwitchError("Não foi possível trocar de empresa.");
+    } finally {
+      setSwitching(false);
+    }
   }
 
   async function logout() {
@@ -194,7 +221,7 @@ export function Sidebar({ user }: { user: ShellUser }) {
               {list.map((m) => (
                 <button
                   key={m.orgId}
-                  onClick={() => switchOrg(m.orgId)}
+                  onClick={() => requestOrgSwitch(m)}
                   className={`block w-full truncate rounded-md px-2 py-1.5 text-left text-sm hover:bg-zinc-800 ${
                     m.orgId === user.activeOrgId
                       ? "text-gold-400"
@@ -257,6 +284,53 @@ export function Sidebar({ user }: { user: ShellUser }) {
           </div>
         </aside>
       )}
+
+      <Dialog
+        open={Boolean(pendingOrg)}
+        onClose={() => {
+          if (!switching) setPendingOrg(null);
+        }}
+        title="Confirmar troca de empresa"
+      >
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            void confirmOrgSwitch();
+          }}
+          className="space-y-4"
+        >
+          <p className="text-sm text-zinc-400">
+            Para acessar <strong className="text-zinc-100">{pendingOrg?.orgName}</strong>, informe sua senha.
+          </p>
+          <input
+            type="password"
+            value={switchPassword}
+            onChange={(event) => setSwitchPassword(event.target.value)}
+            placeholder="Senha do usuário"
+            autoFocus
+            autoComplete="current-password"
+            className="w-full rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm outline-none focus:border-gold-500"
+          />
+          {switchError && <p className="text-sm text-red-400">{switchError}</p>}
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setPendingOrg(null)}
+              disabled={switching}
+              className="rounded-lg border border-zinc-700 px-3 py-2 text-sm text-zinc-300 hover:bg-zinc-800"
+            >
+              Cancelar
+            </button>
+            <button
+              type="submit"
+              disabled={switching || !switchPassword}
+              className="rounded-lg bg-gold-500 px-3 py-2 text-sm font-semibold text-zinc-950 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {switching ? "Verificando..." : "Acessar empresa"}
+            </button>
+          </div>
+        </form>
+      </Dialog>
     </>
   );
 }

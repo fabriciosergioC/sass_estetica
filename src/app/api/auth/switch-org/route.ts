@@ -4,8 +4,12 @@ import { db } from "@/lib/db";
 import { getSession, setSessionCookie } from "@/lib/auth/session";
 import { HttpError } from "@/lib/auth/guards";
 import { handleApiError } from "@/lib/api";
+import { verifyPassword } from "@/lib/auth/password";
 
-const schema = z.object({ orgId: z.string().min(1) });
+const schema = z.object({
+  orgId: z.string().min(1),
+  password: z.string().min(1, "Informe sua senha"),
+});
 
 /**
  * O `isSuperAdmin` do JWT é retrato do login e vale 7 dias; a conta no banco é a palavra final.
@@ -24,7 +28,15 @@ export async function POST(req: NextRequest) {
     const session = await getSession();
     if (!session) throw new HttpError(401, "Sessão expirada.");
 
-    const { orgId } = schema.parse(await req.json());
+    const { orgId, password } = schema.parse(await req.json());
+
+    const account = await db.user.findUnique({
+      where: { id: session.userId },
+      select: { passwordHash: true },
+    });
+    if (!account || !(await verifyPassword(password, account.passwordHash))) {
+      throw new HttpError(401, "Senha incorreta.");
+    }
 
     // Primeiro tenta encontrar no cache da sessão
     const cachedMembership = session.cachedMemberships?.find((m) => m.orgId === orgId);
