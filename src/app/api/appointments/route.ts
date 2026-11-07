@@ -27,8 +27,8 @@ export async function GET(req: NextRequest) {
     const customerId = url.searchParams.get("customerId");
     const status = url.searchParams.get("status");
 
-    const startAt = from ? new Date(Number(from.slice(0, 4)), Number(from.slice(5, 7)) - 1, Number(from.slice(8, 10))) : undefined;
-    const endBase = to ? new Date(Number(to.slice(0, 4)), Number(to.slice(5, 7)) - 1, Number(to.slice(8, 10))) : undefined;
+    const startAt = from ? localDateTime(from, "00:00") : undefined;
+    const endBase = to ? localDateTime(to, "00:00") : undefined;
     const endAt = endBase ? new Date(endBase.getTime() + 24 * 60 * 60 * 1000) : undefined;
 
     const appointments = await db.appointment.findMany({

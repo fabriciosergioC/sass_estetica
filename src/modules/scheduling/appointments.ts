@@ -2,7 +2,7 @@ import { db } from "@/lib/db";
 import { assertSlotFree } from "./availability";
 import { publishEvent } from "@/modules/automation/events";
 import { enqueueJob } from "@/modules/automation/jobs";
-import { sendTemplateMessage, type TemplateKey, type AppointmentVars } from "@/modules/whatsapp/messages";
+import { sendTemplateMessage, formatDateTimeBR, type TemplateKey, type AppointmentVars } from "@/modules/whatsapp/messages";
 import { publishAppointmentEvent } from "./appointments-bus";
 
 export const ACTIVE_STATUSES = ["SCHEDULED", "CONFIRMED", "IN_SERVICE"] as const;
@@ -559,10 +559,8 @@ export async function syncWhatsAppConversationStatus(
     // Pré-visualização de uma conversa recém-criada pelo agendamento: a linha da lista não
     // pode chegar vazia. Só quando ainda não existe mensagem, para nunca sobrescrever um papo.
     if (conversation._count.messages === 0) {
-      const when = `${appointment.startAt.toLocaleDateString("pt-BR")} às ${appointment.startAt.toLocaleTimeString("pt-BR", {
-        hour: "2-digit",
-        minute: "2-digit",
-      })}`;
+      const { data, hora } = formatDateTimeBR(appointment.startAt);
+      const when = `${data} às ${hora}`;
       await db.whatsAppConversation.update({
         where: { id: conversation.id },
         data: {
