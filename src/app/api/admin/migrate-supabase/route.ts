@@ -49,10 +49,10 @@ export async function GET(req: NextRequest) {
 
   try {
     const orgs = await db.organization.findMany({ select: { id: true, name: true } });
-    const counts: Record<string, number> = {};
+    const counts: Record<string, { rulesCreated: number; templatesCreated: number; templatesTotal: number }> = {};
 
     for (const org of orgs) {
-      let created = 0;
+      let rulesCreated = 0;
       const existing = await db.automationRule.findMany({ where: { orgId: org.id } });
 
       for (const rule of DEFAULT_RULES) {
@@ -70,16 +70,18 @@ export async function GET(req: NextRequest) {
           await db.automationRule.create({
             data: { orgId: org.id, event: rule.event, action: rule.action, config: JSON.stringify(rule.config) },
           });
-          created++;
+          rulesCreated++;
         }
       }
+      let templatesCreated = 0;
       const existingTemplates = await db.messageTemplate.findMany({ where: { orgId: org.id } });
       for (const template of DEFAULT_TEMPLATES) {
         if (existingTemplates.some((current) => current.key === template.key)) continue;
         await db.messageTemplate.create({ data: { orgId: org.id, ...template } });
-        created++;
+        templatesCreated++;
       }
-      counts[org.name] = created;
+      const templatesTotal = await db.messageTemplate.count({ where: { orgId: org.id } });
+      counts[org.name] = { rulesCreated, templatesCreated, templatesTotal };
     }
 
     return NextResponse.json({ ok: true, counts });
