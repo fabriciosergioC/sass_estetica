@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Teste de Performance - SaaS Barbearia</title>
+    <style>
+        body {
+            font-family: system-ui, -apple-system, sans-serif;
+            background: #09090b;
+            color: #f4f4f5;
+            padding: 20px;
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        h1 {
+            color: #fbbf24;
+            margin-bottom: 30px;
+        }
+        .test-card {
+            background: #18181b;
+            border: 1px solid #27272a;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        .route-name {
+            font-size: 18px;
+            font-weight: 600;
+            margin-bottom: 10px;
+            color: #fbbf24;
+        }
+        .metrics {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+            margin-top: 15px;
+        }
+        .metric {
+            background: #27272a;
+            padding: 15px;
+            border-radius: 6px;
+        }
+        .metric-label {
+            font-size: 12px;
+            color: #a1a1aa;
+            margin-bottom: 5px;
+        }
+        .metric-value {
+            font-size: 24px;
+            font-weight: 600;
+            color: #f4f4f5;
+        }
+        .status-badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 9999px;
+            font-size: 12px;
+            font-weight: 500;
+        }
+        .status-ok {
+            background: #166534;
+            color: #bbf7d0;
+        }
+        .status-error {
+            background: #991b1b;
+            color: #fecaca;
+        }
+        .status-slow {
+            background: #92400e;
+            color: #fef3c7;
+        }
+        .run-test {
+            background: #fbbf24;
+            color: #09090b;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 6px;
+            font-weight: 600;
+            cursor: pointer;
+            font-size: 16px;
+            margin-bottom: 20px;
+        }
+        .run-test:hover {
+            background: #f59e0b;
+        }
+        .run-test:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        .summary {
+            background: #1c1917;
+            border: 1px solid #44403c;
+            border-radius: 8px;
+            padding: 20px;
+            margin-top: 30px;
+        }
+        .summary h2 {
+            color: #fbbf24;
+            margin-bottom: 15px;
+        }
+        .loading {
+            opacity: 0.5;
+        }
+    </style>
+</head>
+<body>
+    <h1>📊 Teste de Performance - SaaS Barbearia</h1>
+
+    <button class="run-test" onclick="runAllTests()">🚀 Executar Todos os Testes</button>
+
+    <div id="results"></div>
+
+    <div id="summary" class="summary" style="display: none;">
+        <h2>📈 Resumo Geral</h2>
+        <div id="summary-content"></div>
+    </div>
+
+    <script>
+        const baseUrl = 'http://localhost:3001';
+        const routes = [
+            { path: '/', name: 'Home', type: 'public' },
+            { path: '/login', name: 'Login', type: 'public' },
+            { path: '/app', name: 'Dashboard', type: 'protected' },
+            { path: '/app/agenda', name: 'Agenda', type: 'protected' },
+            { path: '/app/clientes', name: 'Clientes', type: 'protected' },
+            { path: '/app/barbeiros', name: 'Barbeiros', type: 'protected' },
+            { path: '/app/servicos', name: 'Serviços', type: 'protected' },
+            { path: '/app/oportunidades', name: 'Oportunidades', type: 'protected' },
+            { path: '/app/configuracoes', name: 'Configurações', type: 'protected' },
+            { path: '/api/dashboard', name: 'API Dashboard', type: 'api' }
+        ];
+
+        async function testRoute(route) {
+            const times = [];
+            let status = 'OK';
+
+            // Execute 5 requests to get average
+            for (let i = 0; i < 5; i++) {
+                try {
+                    const start = performance.now();
+                    const response = await fetch(`${baseUrl}${route.path}`, {
+                        method: 'GET',
+                        mode: 'cors'
+                    });
+                    const end = performance.now();
+                    times.push(end - start);
+
+                    if (!response.ok && response.status !== 401 && response.status !== 403) {
+                        status = 'ERROR';
+                    }
+                } catch (error) {
+                    status = 'ERROR';
+                    times.push(0);
+                }
+
+                // Small delay between requests
+                await new Promise(resolve => setTimeout(resolve, 100));
+            }
+
+            const avg = times.reduce((a, b) => a + b, 0) / times.length;
+            const min = Math.min(...times);
+            const max = Math.max(...times);
+
+            return {
+                ...route,
+                times,
+                avg,
+                min,
+                max,
+                status
+            };
+        }
+
+        function renderResult(result) {
+            const statusClass = result.status === 'OK'
+                ? (result.avg < 500 ? 'status-ok' : 'status-slow')
+                : 'status-error';
+
+            return `
+                <div class="test-card">
+                    <div class="route-name">
+                        ${result.name}
+                        <span class="status-badge ${statusClass}">${result.status}</span>
+                    </div>
+                    <div style="font-size: 14px; color: #a1a1aa; margin-bottom: 10px;">
+                        ${result.path} | Tipo: ${result.type}
+                    </div>
+                    <div class="metrics">
+                        <div class="metric">
+                            <div class="metric-label">Média</div>
+                            <div class="metric-value">${result.avg.toFixed(0)}ms</div>
+                        </div>
+                        <div class="metric">
+                            <div class="metric-label">Mínimo</div>
+                            <div class="metric-value">${result.min.toFixed(0)}ms</div>
+                        </div>
+                        <div class="metric">
+                            <div class="metric-label">Máximo</div>
+                            <div class="metric-value">${result.max.toFixed(0)}ms</div>
+                        </div>
+                        <div class="metric">
+                            <div class="metric-label">Tipo</div>
+                            <div class="metric-value" style="font-size: 16px;">${result.type}</div>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderSummary(results) {
+            const successful = results.filter(r => r.status === 'OK');
+            const failed = results.filter(r => r.status === 'ERROR');
+            const slow = results.filter(r => r.avg > 1000);
+
+            const avgAll = successful.reduce((a, b) => a + b.avg, 0) / successful.length || 0;
+            const fastest = successful.sort((a, b) => a.avg - b.avg)[0];
+            const slowest = successful.sort((a, b) => b.avg - a.avg)[0];
+
+            return `
+                <div class="metrics">
+                    <div class="metric">
+                        <div class="metric-label">Tempo Médio Geral</div>
+                        <div class="metric-value">${avgAll.toFixed(0)}ms</div>
+                    </div>
+                    <div class="metric">
+                        <div class="metric-label">Rotas Testadas</div>
+                        <div class="metric-value">${results.length}</div>
+                    </div>
+                    <div class="metric">
+                        <div class="metric-label">Sucesso</div>
+                        <div class="metric-value">${successful.length}</div>
+                    </div>
+                    <div class="metric">
+                        <div class="metric-label">Falhas</div>
+                        <div class="metric-value">${failed.length}</div>
+                    </div>
+                </div>
+
+                <h3 style="margin-top: 20px; margin-bottom: 10px; color: #f4f4f5;">🏆 Rota Mais Rápida</h3>
+                <p style="color: #a1a1aa;">${fastest?.name || 'N/A'} - ${fastest?.avg.toFixed(0) || 0}ms</p>
+
+                <h3 style="margin-top: 20px; margin-bottom: 10px; color: #f4f4f5;">🐢 Rota Mais Lenta</h3>
+                <p style="color: #a1a1aa;">${slowest?.name || 'N/A'} - ${slowest?.avg.toFixed(0) || 0}ms</p>
+
+                ${slow.length > 0 ? `
+                    <h3 style="margin-top: 20px; margin-bottom: 10px; color: #f59e0b;">⚠️ Rotas Lentas (>1s)</h3>
+                    <ul style="color: #a1a1aa;">
+                        ${slow.map(r => `<li>${r.name} - ${r.avg.toFixed(0)}ms</li>`).join('')}
+                    </ul>
+                ` : ''}
+
+                <h3 style="margin-top: 20px; margin-bottom: 10px; color: #f4f4f5;">📊 Por Tipo de Rota</h3>
+                ${['public', 'protected', 'api'].map(type => {
+                    const typeRoutes = successful.filter(r => r.type === type);
+                    const typeAvg = typeRoutes.reduce((a, b) => a + b.avg, 0) / typeRoutes.length || 0;
+                    return `<p style="color: #a1a1aa; margin: 5px 0;">
+                        <strong>${type}:</strong> ${typeRoutes.length} rotas, média ${typeAvg.toFixed(0)}ms
+                    </p>`;
+                }).join('')}
+            `;
+        }
+
+        async function runAllTests() {
+            const button = document.querySelector('.run-test');
+            const resultsDiv = document.getElementById('results');
+            const summaryDiv = document.getElementById('summary');
+
+            button.disabled = true;
+            button.textContent = '⏳ Testando...';
+            resultsDiv.innerHTML = '';
+
+            const results = [];
+
+            for (const route of routes) {
+                const result = await testRoute(route);
+                results.push(result);
+                resultsDiv.innerHTML += renderResult(result);
+            }
+
+            summaryDiv.style.display = 'block';
+            document.getElementById('summary-content').innerHTML = renderSummary(results);
+
+            button.disabled = false;
+            button.textContent = '🚀 Executar Todos os Testes Novamente';
+        }
+
+        // Auto-run on load
+        window.addEventListener('load', () => {
+            setTimeout(runAllTests, 1000);
+        });
+    </script>
+</body>
+</html>

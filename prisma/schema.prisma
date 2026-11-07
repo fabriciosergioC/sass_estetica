@@ -1,0 +1,815 @@
+// SaaS Barbearia — schema multi-tenant (Postgres do Supabase)
+// Convenções: money em centavos (Int), enums como String, datas em UTC.
+//
+// O histórico de migrations em `prisma/migrations` é dialeto Postgres. As 4 migrations antigas,
+// que foram geradas para SQLite, estão arquivadas em `prisma/migrations_sqlite` — elas ainda
+// descrevem o `prisma/dev.db` local, mas não são aplicáveis num Postgres e o Prisma recusaria o
+// diretório se ficassem aqui (o `migration_lock.toml` declara um provedor só).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+
+  // URL que a APLICAÇÃO usa em tempo de runtime: o pooler do Supabase (porta 5432 = session
+  // pooler, a escolha certa para o processo longo do Next). Se um dia apontar o pooler de
+  // transação (6543), acrescente `?pgbouncer=true&connection_limit=1` — sem isso o Prisma usa
+  // prepared statements e o PgBouncer derruba a conexão.
+  url = env("DATABASE_URL")
+
+  // URL que só as FERRAMENTAS de migration usam, ligando direto no Postgres. É o que evita o
+  // clássico "shadow database" quebrar atrás do pooler: `migrate dev`/`db pull` escrevem DDL,
+  // e DDL atrás de PgBouncer não é seguro.
+  directUrl = env("DIRECT_URL")
+}
+
+// ============ PLATAFORMA / TENANCY ============
+
+model Organization {
+  id        String   @id @default(cuid())
+  name      String
+  slug      String   @unique
+  status    String   @default("ACTIVE") // ACTIVE | SUSPENDED | BLOCKED
+  phone     String?
+  whatsapp  String?
+  address   String?
+  city      String?
+  state     String?
+  instagram String?
+  description String?
+  logoUrl   String?
+  coverUrl  String?
+  primaryColor String @default("#d4a24e")
+  timezone  String   @default("America/Sao_Paulo")
+  slotStepMin Int    @default(30) // granularidade da agenda (30min)
+  settings  String   @default("{}")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  members        OrganizationMember[]
+  customers      Customer[]
+  barbers        Barber[]
+  services       Service[]
+  businessHours  BusinessHour[]
+  appointments   Appointment[]
+  payments       Payment[]
+  waConnections  WhatsAppConnection[]
+  waMessages     WhatsAppMessage[]
+  waAccounts     WhatsAppAccount[]
+  waContacts     WhatsAppContact[]
+  waConversations WhatsAppConversation[]
+  waMedia        WhatsAppMedia[]
+  waSessions     WhatsAppSession[]
+  waLogs         WhatsAppLog[]
+  waQuickReplies WhatsAppQuickReply[]
+  waLabels       WhatsAppLabel[]
+  waFollowUps    WhatsAppFollowUp[]
+  waBlocked      WhatsAppBlockedNumber[]
+  templates      MessageTemplate[]
+  automationRules AutomationRule[]
+  automationExecutions AutomationExecution[]
+  notifications  Notification[]
+  opportunities  Opportunity[]
+  auditLogs      AuditLog[]
+  subscription   Subscription?
+  webhookEvents  WebhookEvent[]
+
+  @@index([status])
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  name         String
+  phone        String?
+  isSuperAdmin Boolean  @default(false)
+  tokenVersion Int      @default(0) // invalida JWTs ao trocar senha
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  memberships OrganizationMember[]
+  auditLogs   AuditLog[]
+  waConversations WhatsAppConversation[]
+  waFollowUps     WhatsAppFollowUp[]
+}
+
+model OrganizationMember {
+  id      String @id @default(cuid())
+  orgId   String
+  userId  String
+  role    String // ADMIN | MANAGER | BARBER | RECEPTIONIST
+  status  String @default("ACTIVE") // ACTIVE | INVITED | DISABLED
+  createdAt DateTime @default(now())
+
+  org  Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, userId])
+  @@index([userId])
+}
+
+// ============ OPERAÇÃO ============
+
+model Customer {
+  id        String   @id @default(cuid())
+  orgId     String
+  name      String
+  phone     String
+  birthday  DateTime?
+  notes     String?
+  whatsappOptIn Boolean @default(true) // consentimento LGPD p/ mensagens
+  passwordHash String? // acesso ao portal do cliente (opcional — cliente sem conta é null)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  org        Organization     @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  appointments Appointment[]
+  crmNotes   CustomerNote[]
+  metrics    CustomerMetrics?
+  messages   WhatsAppMessage[]
+  waContacts     WhatsAppContact[]
+  waConversations WhatsAppConversation[]
+  waFollowUps    WhatsAppFollowUp[]
+
+  @@unique([orgId, phone])
+  @@index([orgId, name])
+}
+
+model Barber {
+  id          String  @id @default(cuid())
+  orgId       String
+  userId      String? // acesso ao painel (opcional)
+  name        String
+  photoUrl    String?
+  bio         String?
+  specialties String  @default("")
+  commissionPct Int   @default(0)
+  active      Boolean @default(true)
+  createdAt   DateTime @default(now())
+
+  org          Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  services     BarberService[]
+  availability BarberAvailability[]
+  timeOffs     BarberTimeOff[]
+  appointments Appointment[]
+  businessHours BusinessHour[]
+
+  @@index([orgId, active])
+}
+
+model Service {
+  id          String  @id @default(cuid())
+  orgId       String
+  name        String
+  description String?
+  durationMin Int     @default(30)
+  priceCents  Int     @default(0)
+  category    String  @default("GERAL")
+  imageUrl    String?
+  active      Boolean @default(true)
+  sortOrder   Int     @default(0)
+  createdAt   DateTime @default(now())
+
+  org      Organization    @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  barbers  BarberService[]
+  appointments Appointment[]
+
+  @@index([orgId, active])
+}
+
+model BarberService {
+  barberId  String
+  serviceId String
+
+  barber  Barber  @relation(fields: [barberId], references: [id], onDelete: Cascade)
+  service Service @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+
+  @@id([barberId, serviceId])
+}
+
+// Horário de funcionamento da org (barberId null) ou do barbeiro
+model BusinessHour {
+  id       String @id @default(cuid())
+  orgId    String
+  barberId String?
+  weekday  Int // 0=domingo .. 6=sábado
+  openTime String // "09:00"
+  closeTime String // "19:00"
+  closed   Boolean @default(false)
+  breakStart String?
+  breakEnd   String?
+
+  org    Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  barber Barber?      @relation(fields: [barberId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, barberId, weekday])
+}
+
+model BarberAvailability {
+  id       String @id @default(cuid())
+  orgId    String
+  barberId String
+  weekday  Int
+  openTime String
+  closeTime String
+
+  barber Barber @relation(fields: [barberId], references: [id], onDelete: Cascade)
+
+  @@index([barberId])
+}
+
+model BarberTimeOff {
+  id       String   @id @default(cuid())
+  orgId    String
+  barberId String
+  startAt  DateTime
+  endAt    DateTime
+  reason   String?
+
+  barber Barber @relation(fields: [barberId], references: [id], onDelete: Cascade)
+
+  @@index([barberId, startAt])
+}
+
+model Appointment {
+  id          String   @id @default(cuid())
+  orgId       String
+  barberId    String
+  customerId  String
+  serviceId   String
+  startAt     DateTime
+  endAt       DateTime
+  status      String   @default("SCHEDULED") // SCHEDULED | CONFIRMED | IN_SERVICE | COMPLETED | CANCELLED | NO_SHOW | RESCHEDULED
+  priceCents  Int      @default(0)
+  notes       String?
+  source      String   @default("ADMIN") // ADMIN | PUBLIC | RECOVERY
+  createdByUserId String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  org         Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  barber      Barber       @relation(fields: [barberId], references: [id])
+  customer    Customer     @relation(fields: [customerId], references: [id])
+  service     Service      @relation(fields: [serviceId], references: [id])
+  statusHistory AppointmentStatusHistory[]
+  payments    Payment[]
+  messages    WhatsAppMessage[]
+
+  @@index([orgId, startAt])
+  @@index([orgId, barberId, startAt])
+  @@index([orgId, customerId])
+  @@index([orgId, status])
+}
+
+model AppointmentStatusHistory {
+  id            String   @id @default(cuid())
+  appointmentId String
+  fromStatus    String?
+  toStatus      String
+  byUserId      String?
+  reason        String?
+  createdAt     DateTime @default(now())
+
+  appointment Appointment @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
+
+  @@index([appointmentId])
+}
+
+model CustomerNote {
+  id        String   @id @default(cuid())
+  orgId     String
+  customerId String
+  authorId  String?
+  content   String
+  createdAt DateTime @default(now())
+
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@index([customerId])
+}
+
+// Cache de métricas derivadas (recalculado por jobs/eventos)
+model CustomerMetrics {
+  customerId      String   @id
+  visits          Int      @default(0)
+  noShows         Int      @default(0)
+  cancellations   Int      @default(0)
+  avgIntervalDays Float?
+  lastVisitAt     DateTime?
+  nextExpectedAt  DateTime?
+  totalSpentCents Int      @default(0)
+  segment         String?  // NEW | RECURRENT | VIP | AT_RISK | INACTIVE | RETURN_DUE
+  riskScore       Float?
+  updatedAt       DateTime @updatedAt
+
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+}
+
+model Payment {
+  id            String   @id @default(cuid())
+  orgId         String
+  appointmentId String?
+  amountCents   Int
+  method        String   @default("CASH") // CASH | PIX | CARD | OTHER
+  status        String   @default("PAID") // PENDING | PAID | REFUNDED
+  paidAt        DateTime?
+  createdAt     DateTime @default(now())
+
+  org         Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  appointment Appointment? @relation(fields: [appointmentId], references: [id])
+
+  @@index([orgId, createdAt])
+}
+
+// ============ WHATSAPP / AUTOMAÇÃO ============
+
+// ---- Integração WhatsApp (módulo WhatsAppService + adapters) -----------------
+//
+// Convenção de vocabulário (importante para não quebrar as 46 linhas que já existem):
+//  - direction continua "OUT" | "IN" (o prompt fala em incoming/outgoing; a tradução
+//    canonica acontece no WhatsAppService, nunca no banco).
+//  - status continua QUEUED | PENDING | SENT | DELIVERED | READ | FAILED | CANCELLED,
+//    mais RECEIVED para o que chegou. pending/sent/delivered/read/failed do prompt são
+//    mapeados para cá em src/modules/whatsapp/types.ts.
+//  - Nenhum segredo (token, key, credencial de sessão) entra aqui: credencial fica no
+//    .env e a sessão do Baileys fica na pasta baileys_auth_<orgId>/, fora do banco.
+
+model WhatsAppConnection {
+  id        String   @id @default(cuid())
+  orgId     String   @unique
+  provider  String   @default("DEV") // BARIELS | EVOLUTION | META_CLOUD | ZAPI | DEV(mock)
+  status    String   @default("DISCONNECTED") // CONNECTED | DISCONNECTED | PENDING_QR | RECONNECT_REQUIRED | ERROR
+  phone     String?
+  config    String   @default("{}") // opções do provedor (NUNCA expor na UI)
+  lastSyncAt DateTime?
+  updatedAt DateTime @updatedAt
+
+  org       Organization       @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  messages  WhatsAppMessage[]
+  accounts  WhatsAppAccount[]
+  contacts  WhatsAppContact[]
+  conversations WhatsAppConversation[]
+  sessions  WhatsAppSession[]
+
+  @@index([provider, status])
+}
+
+/** A conta do WhatsApp que está pareada naquela conexão (número, @lid, nome, foto). */
+model WhatsAppAccount {
+  id          String   @id @default(cuid())
+  orgId       String
+  connectionId String
+  provider    String
+  jid         String // ex.: 553192154970@s.whatsapp.net
+  lid         String? // ex.: 144543299182662@lid (username do WhatsApp desde 2025)
+  phone       String?
+  accountName String?
+  avatarUrl   String?
+  status      String   @default("CONNECTED") // CONNECTED | DISCONNECTED | LOGGED_OUT
+  pairedAt    DateTime?
+  lastSeenAt  DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  org        Organization       @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  connection WhatsAppConnection   @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  contacts   WhatsAppContact[]
+  conversations WhatsAppConversation[]
+
+  @@unique([orgId, jid])
+  @@index([orgId, status])
+}
+
+/**
+ * Contato do WhatsApp (agenda + quem já falou com a barbearia).
+ * `customerId` liga ao CRM quando o número bate; `masked=true` é o caso @lid, em que o
+ * WhatsApp esconde o número — aí NÃO podemos criar Customer com aqueles dígitos.
+ */
+model WhatsAppContact {
+  id          String   @id @default(cuid())
+  orgId       String
+  connectionId String?
+  accountId   String?
+  jid         String // @s.whatsapp.net ou @lid
+  lid         String?
+  phone       String? // dígitos internacionais quando o WhatsApp devolve
+  masked      Boolean  @default(false)
+  name        String?
+  avatarUrl   String?
+  customerId  String?
+  source      String   @default("whatsapp") // whatsapp | crm | manual
+  firstSeenAt DateTime @default(now())
+  lastSeenAt  DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  org        Organization       @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  connection WhatsAppConnection? @relation(fields: [connectionId], references: [id])
+  account    WhatsAppAccount?    @relation(fields: [accountId], references: [id])
+  customer   Customer?           @relation(fields: [customerId], references: [id])
+  conversations WhatsAppConversation[]
+  messages   WhatsAppMessage[]
+
+  @@unique([orgId, jid])
+  @@index([orgId, phone])
+  @@index([orgId, customerId])
+}
+
+/** Conversa (1 por contato por org) — é o que a tela de conversas lista. */
+model WhatsAppConversation {
+  id          String   @id @default(cuid())
+  orgId       String
+  connectionId String?
+  accountId   String?
+  contactId   String
+  customerId  String?
+  /// "Lead" do CRM associado (Opportunity é o modelo que faz esse papel neste projeto).
+  opportunityId String?
+  /// Responsável comercial dentro da barbearia.
+  assigneeId  String?
+  status      String   @default("OPEN") // OPEN | IN_PROGRESS | WAITING_CUSTOMER | DONE
+  unreadCount Int      @default(0)
+  lastMessageAt DateTime @default(now())
+  lastBody    String?
+  archived    Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  org        Organization       @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  connection WhatsAppConnection? @relation(fields: [connectionId], references: [id])
+  account    WhatsAppAccount?    @relation(fields: [accountId], references: [id])
+  contact    WhatsAppContact      @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  customer   Customer?            @relation(fields: [customerId], references: [id])
+  opportunity Opportunity?         @relation(fields: [opportunityId], references: [id])
+  assignee   User?                @relation(fields: [assigneeId], references: [id])
+  messages   WhatsAppMessage[]
+  labels     WhatsAppConversationLabel[]
+  followUps  WhatsAppFollowUp[]
+
+  @@unique([orgId, contactId])
+  @@index([orgId, status, lastMessageAt])
+  @@index([orgId, lastMessageAt])
+}
+
+model WhatsAppMedia {
+  id          String   @id @default(cuid())
+  orgId       String
+  messageId   String
+  kind        String // image | video | audio | document | sticker
+  url         String? // data URL / caminho local quando baixamos
+  mimeType    String?
+  fileName    String?
+  sizeBytes   Int?
+  width       Int?
+  height      Int?
+  durationSec Int?
+  createdAt   DateTime @default(now())
+
+  org     Organization      @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  message WhatsAppMessage   @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, kind])
+}
+
+/**
+ * Espelho administrativo da sessão (a credencial real fica em baileys_auth_<orgId>/).
+ * Serve para a tela mostrar "última sincronização / sessão pareada / sessão revogada"
+ * sem nunca expor chave de sessão.
+ */
+model WhatsAppSession {
+  id        String   @id @default(cuid())
+  orgId     String
+  connectionId String?
+  provider  String
+  jid       String?
+  deviceId  String?
+  authDir   String?
+  status    String   @default("ACTIVE") // ACTIVE | EXPIRED | REVOKED
+  pairedAt  DateTime?
+  lastSyncAt DateTime?
+  revokedAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  org        Organization       @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  connection WhatsAppConnection? @relation(fields: [connectionId], references: [id])
+
+  @@index([orgId, status])
+}
+
+/** Trilha de eventos do módulo (painel WhatsApp → Logs). Sem token, sem payload sensível. */
+model WhatsAppLog {
+  id       String   @id @default(cuid())
+  orgId    String?
+  level    String   @default("info") // info | warn | error
+  event    String // connection.qr | message.sent | message.delivered | adapter.error ...
+  actor    String? // conta/número relacionado
+  endpoint String?
+  status   String?
+  detail   String?
+  createdAt DateTime @default(now())
+
+  org Organization? @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, createdAt])
+  @@index([level, createdAt])
+}
+
+/** Respostas rápidas ("/ola") com as mesmas variáveis dos templates. */
+model WhatsAppQuickReply {
+  id       String   @id @default(cuid())
+  orgId    String
+  shortcut String // "ola" (sem a barra)
+  title    String?
+  body     String // suporta {{nome}} {{empresa}} {{telefone}} {{usuario}}
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, shortcut])
+}
+
+model WhatsAppLabel {
+  id     String  @id @default(cuid())
+  orgId  String
+  name   String // Novo lead | Interessado | Sem resposta | Follow-up | Cliente | Não interessado
+  color  String  @default("neutral") // neutral | gold | green | red | blue | amber
+  createdAt DateTime @default(now())
+
+  org         Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  assignments WhatsAppConversationLabel[]
+
+  @@unique([orgId, name])
+}
+
+model WhatsAppConversationLabel {
+  conversationId String
+  labelId        String
+  createdAt      DateTime @default(now())
+
+  conversation WhatsAppConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  label        WhatsAppLabel        @relation(fields: [labelId], references: [id], onDelete: Cascade)
+
+  @@id([conversationId, labelId])
+}
+
+/** Follow-up agendado (§23): vira Job de lembrete para o responsável. */
+model WhatsAppFollowUp {
+  id             String   @id @default(cuid())
+  orgId          String
+  conversationId String?
+  customerId     String?
+  assigneeId     String?
+  scheduledAt    DateTime
+  reason         String
+  status         String   @default("PENDING") // PENDING | DONE | CANCELLED
+  doneAt         DateTime?
+  createdAt      DateTime @default(now())
+
+  org          Organization?         @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  conversation WhatsAppConversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+  customer     Customer?             @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  assignee     User?                 @relation(fields: [assigneeId], references: [id])
+
+  @@index([orgId, status, scheduledAt])
+}
+
+/** Números que nunca devem receber mensagem (bloqueio + opt-out manual). */
+model WhatsAppBlockedNumber {
+  id     String  @id @default(cuid())
+  orgId  String
+  phone  String // dígitos internacionais
+  reason String  @default("opt_out") // opt_out | spam | manual | invalid
+  createdAt DateTime @default(now())
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, phone])
+}
+
+model WhatsAppMessage {
+  id            String   @id @default(cuid())
+  orgId         String
+  connectionId  String?
+  conversationId String?
+  contactId     String?
+  customerId    String?
+  appointmentId String?
+  direction     String // OUT | IN
+  phone         String
+  body          String
+  /// image | video | audio | document | sticker | location | text | unknown
+  messageType   String   @default("text")
+  mediaUrl      String?
+  mediaMime     String?
+  templateKey   String?
+  status        String   @default("QUEUED") // QUEUED | PENDING | SENT | DELIVERED | READ | FAILED | CANCELLED | RECEIVED
+  providerMsgId String?
+  error         String?
+  sentAt        DateTime?
+  deliveredAt   DateTime?
+  readAt        DateTime?
+  createdAt     DateTime @default(now())
+  /// Nullable de propósito: para adicionar colunas o SQLite RECONSTRÓI a WhatsAppMessage e não
+  /// consegue preencher `updatedAt` das 55 linhas históricas (@updatedAt é client-side, não vira
+  /// DEFAULT no SQL). Em linha nova o Prisma grava @updatedAt em toda escrita.
+  updatedAt     DateTime? @updatedAt
+
+  org         Organization        @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  connection  WhatsAppConnection? @relation(fields: [connectionId], references: [id])
+  conversation WhatsAppConversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+  contact     WhatsAppContact?    @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  customer    Customer?           @relation(fields: [customerId], references: [id])
+  appointment Appointment?        @relation(fields: [appointmentId], references: [id])
+  media       WhatsAppMedia[]
+
+  @@index([orgId, status])
+  @@index([orgId, phone, createdAt])
+  @@index([orgId, conversationId, createdAt])
+  @@index([providerMsgId])
+}
+
+model MessageTemplate {
+  id      String  @id @default(cuid())
+  orgId   String
+  key     String // confirmation | reminder_24h | reminder_2h | cancellation | reschedule | post_visit | return_due | slot_recovery
+  name    String
+  body    String // suporta {{cliente}} {{data}} {{hora}} {{barbearia}} {{servico}} {{barbeiro}}
+  enabled Boolean @default(true)
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, key])
+}
+
+model AutomationRule {
+  id      String  @id @default(cuid())
+  orgId   String
+  event   String // appointment.created | appointment.confirmed | appointment.cancelled | appointment.rescheduled | appointment.completed | appointment.no_show | customer.inactive | customer.return_due | slot.opened
+  action  String // send_whatsapp | create_task | notify_admin | create_opportunity | schedule_reminder
+  config  String  @default("{}")
+  enabled Boolean @default(true)
+  createdAt DateTime @default(now())
+
+  org        Organization          @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  executions AutomationExecution[]
+
+  @@index([orgId, event, enabled])
+}
+
+model AutomationExecution {
+  id        String   @id @default(cuid())
+  orgId     String
+  ruleId    String?
+  event     String
+  payload   String   @default("{}")
+  status    String   @default("RUNNING") // RUNNING | SUCCESS | FAILED
+  error     String?
+  createdAt DateTime @default(now())
+
+  org  Organization   @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  rule AutomationRule? @relation(fields: [ruleId], references: [id])
+}
+
+// Fila de jobs assíncronos (worker in-process; trocável por Redis depois)
+model Job {
+  id          String   @id @default(cuid())
+  orgId       String?
+  type        String // send_whatsapp | schedule_reminder | compute_customer_metrics | detect_opportunities
+  payload     String   @default("{}")
+  status      String   @default("PENDING") // PENDING | PROCESSING | DONE | FAILED | DEAD
+  runAt       DateTime @default(now())
+  attempts    Int      @default(0)
+  maxAttempts Int      @default(3)
+  lastError   String?
+  dedupeKey   String?  @unique
+  createdAt   DateTime @default(now())
+  processedAt DateTime?
+
+  @@index([status, runAt])
+}
+
+// Idempotência de webhooks
+model WebhookEvent {
+  id         String   @id @default(cuid())
+  orgId      String?
+  provider   String
+  externalId String
+  payload    String   @default("{}")
+  processedAt DateTime?
+
+  org  Organization? @relation(fields: [orgId], references: [id])
+
+  @@unique([provider, externalId])
+}
+
+// ============ INTELIGÊNCIA ============
+
+model Notification {
+  id     String  @id @default(cuid())
+  orgId  String
+  userId String?
+  type   String // NEW_APPOINTMENT | CANCELLATION | SLOT_RECOVERED | CUSTOMER_LATE | CUSTOMER_RISK | OPPORTUNITY | INTEGRATION_ERROR | AUTOMATION_ERROR
+  title  String
+  body   String?
+  data   String  @default("{}")
+  read   Boolean @default(false)
+  createdAt DateTime @default(now())
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, read, createdAt])
+}
+
+model Opportunity {
+  id        String   @id @default(cuid())
+  orgId     String
+  type      String // IDLE_SLOT | RETURN_DUE | INACTIVE_CUSTOMER | NO_UPCOMING | HIGH_DEMAND | LOW_OCCUPANCY | RISK_APPOINTMENT
+  priority  String   @default("MEDIUM") // LOW | MEDIUM | HIGH
+  title     String
+  problem   String
+  evidence  String   @default("")
+  suggestedAction String @default("")
+  actionPayload String @default("{}")
+  status    String   @default("OPEN") // OPEN | ACTION_TAKEN | DISMISSED | EXPIRED
+  refId     String? // ex: slot/appt/customer de referência
+  detectedAt DateTime @default(now())
+  resolvedAt DateTime?
+
+  org     Organization         @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  actions OpportunityAction[]
+  waConversations WhatsAppConversation[]
+
+  @@unique([orgId, type, refId, status])
+  @@index([orgId, status, priority])
+}
+
+model OpportunityAction {
+  id            String   @id @default(cuid())
+  opportunityId String
+  type          String // send_whatsapp | recover_slot | create_campaign
+  payload       String   @default("{}")
+  result        String?
+  createdAt     DateTime @default(now())
+
+  opportunity Opportunity @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
+}
+
+// ============ PLATAFORMA SaaS ============
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  orgId     String?
+  userId    String?
+  action    String // ex: appointment.reschedule, customer.delete
+  entity    String?
+  entityId  String?
+  before    String?
+  after     String?
+  ip        String?
+  createdAt DateTime @default(now())
+
+  org  Organization? @relation(fields: [orgId], references: [id])
+  user User?         @relation(fields: [userId], references: [id])
+
+  @@index([orgId, createdAt])
+}
+
+model Plan {
+  id        String  @id @default(cuid())
+  code      String  @unique // FREE | BASIC | PRO | PREMIUM
+  name      String
+  priceCents Int    @default(0)
+  maxBarbers Int    @default(1)
+  maxCustomers Int  @default(100)
+  maxMessagesMonth Int @default(100)
+  features  String  @default("{}") // {automations,ai,reports,customPage,api}
+  active    Boolean @default(true)
+  sortOrder Int     @default(0)
+
+  subscriptions Subscription[]
+}
+
+model Subscription {
+  id             String   @id @default(cuid())
+  orgId          String   @unique
+  planId         String
+  status         String   @default("ACTIVE") // TRIAL | ACTIVE | PAST_DUE | CANCELLED
+  provider       String? // STRIPE | MERCADO_PAGO | MANUAL
+  providerRef    String?
+  periodStart    DateTime @default(now())
+  periodEnd      DateTime?
+  cancelAtPeriodEnd Boolean @default(false)
+
+  org  Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  plan Plan         @relation(fields: [planId], references: [id])
+}
+
+model SystemSetting {
+  key   String @id
+  value String
+}

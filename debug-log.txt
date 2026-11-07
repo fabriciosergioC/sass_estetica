@@ -1,0 +1,7 @@
+[LOG] 26/10/2026 17:01:22,27 - Script iniciado 
+[LOG] 26/10/2026 17:01:22,27 - Pasta script: C:\Users\fabri\OneDrive\Documentos\sass barbearia\ 
+[LOG] 26/10/2026 17:01:22,28 - Pasta atual: C:\Users\fabri\OneDrive\Documentos\sass barbearia 
+[LOG] 26/10/2026 17:01:22,30 - Pasta atual depois cd: C:\Users\fabri\OneDrive\Documentos\sass barbearia 
+[LOG] 26/10/2026 17:01:22,31 - Esperando pausa 1 
+[LOG] 26/10/2026 17:01:24,09 - Verificando Node.js 
+[LOG] 26/10/2026 17:01:24,13 - ERRO: Node.js nao encontrado 

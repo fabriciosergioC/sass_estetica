@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node -e \"console.log\\('test'\\)\")",
+      "Bash(npx tsx *)",
+      "Bash(netstat -ano)",
+      "Bash(curl -s http://localhost:3005/api/whatsapp/status)",
+      "Bash(curl -s -H \"x-cron-secret: 7056954306f79c28346cc510b638cd8a21cc002ba178a01193fdf246ad498521\" \"http://localhost:3005/api/whatsapp/lookup?numbers=5531987707962\")",
+      "Bash(curl -s -X POST -H \"x-cron-secret: 7056954306f79c28346cc510b638cd8a21cc002ba178a01193fdf246ad498521\" \"http://localhost:3005/api/cron\")",
+      "PowerShell(npx tsx scripts/inspect-specific.ts)",
+      "PowerShell(npx tsx -e \"import { PrismaClient } from '@prisma/client'; const db = new PrismaClient\\(\\); async function main\\(\\) { const msgs = await db.whatsAppMessage.findMany\\({ where: { orgId: 'cmuqps9by0001w6uovq91q77x' }, orderBy: { createdAt: 'desc' }, take: 10 }\\); console.log\\(msgs.map\\(m => \\({ id: m.id, phone: m.phone, direction: m.direction, status: m.status, body: m.body, contactId: m.contactId, createdAt: m.createdAt }\\)\\)\\); } main\\(\\).finally\\(\\(\\) => db.$disconnect\\(\\)\\);\")"
+    ]
+  }
+}

@@ -1,0 +1,192 @@
+@import "tailwindcss";
+
+/*
+ * Paleta "gold" — o dourado do CRM, usado em TODO o destaque interativo (botão primário,
+ * links, selos, foco).
+ *
+ * Por que está no CSS e não só no tailwind.config.ts: o projeto migrou para Tailwind v4
+ * (`@import "tailwindcss"` + `@tailwindcss/postcss`), e no v4 o arquivo de configuração JS só é
+ * lido se você chamá-lo explicitamente com `@config`. Sem isso, o `gold` do config era
+ * simplesmente ignorado: nenhuma classe `bg-gold-500`/`text-gold-400` era gerada. O efeito
+ * prático era o botão primário sair com fundo transparente e texto `text-zinc-950` sobre o
+ * fundo `#09090b` da página — ou seja, botões "sumidos" em Clientes, Atendentes, Serviços etc.
+ * Os valores abaixo são os MESMOS do tailwind.config.ts, que ficou como referência.
+ *
+ * ⚠️ Estes são os valores PADRÃO (dourado no modo escuro). O bloco ":root" mais abaixo deriva as
+ * mesmas variáveis do `--accent` escolhido pelo usuário, então é ali — e não aqui — que a cor
+ * efetiva do sistema nasce.
+ */
+@theme {
+  --color-gold-300: #e7c886;
+  --color-gold-400: #dcb367;
+  --color-gold-500: #d4a24e;
+  --color-gold-600: #b0863c;
+  --color-gold-700: #8a672c;
+
+  /*
+   * Texto que vai SEMPRE em cima do fundo de destaque (botão primário, chip ativo da Agenda).
+   * Não segue a inversão do `zinc`: sobre o acento — que é um tom médio — o texto tem que
+   * continuar escuro nos dois modos, senão o botão some no claro.
+   */
+  --color-on-accent: #09090b;
+}
+
+/*
+ * ===========================================================================
+ * TEMA (modo claro/escuro + cor de destaque)
+ * ===========================================================================
+ *
+ * Como funciona sem tocar tela por tela: no Tailwind v4 cada utilitário compila para a variável
+ * do tema — `bg-zinc-900` vira `background-color: var(--color-zinc-900)` e `bg-gold-500` vira
+ * `var(--color-gold-500)`. Então quem muda a cor do produto é a variável, não o componente.
+ *
+ * O `src/app/layout.tsx` (raiz) grava dois atributos no <html> antes da primeira pintura:
+ *   data-theme="dark|light"   data-accent="gold|azul|verde|roxo|rosa|vermelho"
+ * e este bloco só responde a eles. As opções válidas vivem em `src/lib/theme.ts` — mudar a paleta
+ * aqui sem lá, ou vice-versa, é o único jeito de essa engrenagem descasar.
+ *
+ * Detalhe que importa: `:root` tem mais especificidade que `html`, e as regras daqui não estão em
+ * layer nenhum — por isso elas vencem o `@theme` (que o Tailwind escreve dentro de
+ * `@layer theme`). É de propósito: o bloco abaixo é a fonte da verdade em tempo de execução.
+ */
+:root {
+  /* Cor de destaque efetiva. Cada `data-accent` abaixo só mexe nesta linha. */
+  --accent: #d4a24e;
+
+  /*
+   * No modo escuro os tons claros do acento (300/400, usados como TEXTO sobre fundo escuro)
+   * CLAREIAM; no claro eles escurecem, porque texto claro sobre branco não se lê.
+   * É só esta variável que o `data-theme="light"` inverte — a fórmula é a mesma.
+   */
+  --accent-lift: #ffffff;
+  --accent-shade: #000000;
+
+  --color-gold-300: color-mix(in oklab, var(--accent), var(--accent-lift) 34%);
+  --color-gold-400: color-mix(in oklab, var(--accent), var(--accent-lift) 16%);
+  --color-gold-500: var(--accent);
+  --color-gold-600: color-mix(in oklab, var(--accent), var(--accent-shade) 18%);
+  --color-gold-700: color-mix(in oklab, var(--accent), var(--accent-shade) 38%);
+}
+
+/* ---- Paletas de destaque ---- */
+:root[data-accent="azul"] {
+  --accent: #4f8fd6;
+}
+:root[data-accent="verde"] {
+  --accent: #3aa876;
+}
+:root[data-accent="roxo"] {
+  --accent: #8b6fd6;
+}
+:root[data-accent="rosa"] {
+  --accent: #d9629b;
+}
+:root[data-accent="vermelho"] {
+  --accent: #d9534f;
+}
+
+/*
+ * ---- Modo claro ----
+ *
+ * A escala `zinc` é invertida papel por papel, não espelhada numericamente: no escuro o 950 é o
+ * fundo da página e o 100 é o texto; no claro o 950 passa a ser o fundo quase branco e o 100 passa
+ * a ser o texto quase preto. Os intermediários (400/500/600) são texto discreto nos dois modos,
+ * então viram cinzas médios com contraste de leitura. É isso que faz as ~460 classes `zinc-*` do
+ * CRM funcionarem aqui sem reescrever componente nenhum.
+ */
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  --accent-lift: #000000;
+  --color-on-accent: #0b0b0d;
+
+  --color-zinc-950: #f4f4f5; /* fundo da página */
+  --color-zinc-900: #ffffff; /* cards, inputs, popovers */
+  --color-zinc-800: #e4e4e7; /* bordas e hover */
+  --color-zinc-700: #b8b8bf; /* borda de input, trilha de toggle */
+  --color-zinc-600: #6b6b73; /* legenda discreta */
+  --color-zinc-500: #5a5a62; /* texto secundário */
+  --color-zinc-400: #47474e; /* texto de apoio */
+  --color-zinc-300: #303036;
+  --color-zinc-200: #1d1d21;
+  --color-zinc-100: #101012; /* texto principal */
+
+  /*
+   * Selos e avisos (vermelho/verde/âmbar/azul) são texto fino sobre um fundo 10% da própria cor.
+   * No escuro isso funciona com os tons 400; no claro os mesmos tons 400 somem sobre o branco,
+   * então eles descem para os tons "600" da escala original e os fundos 950 viram a versão 50.
+   */
+  --color-red-500: #ef4444;
+  --color-red-400: #dc2626;
+  --color-red-300: #b91c1c;
+  --color-red-200: #991b1b;
+  --color-red-950: #fef2f2;
+
+  --color-emerald-500: #10b981;
+  --color-emerald-400: #059669;
+  --color-emerald-200: #065f46;
+  --color-emerald-950: #ecfdf5;
+
+  --color-amber-500: #f59e0b;
+  --color-amber-400: #b45309;
+  --color-amber-300: #92400e;
+
+  --color-sky-500: #0ea5e9;
+  --color-sky-400: #0284c7;
+  --color-sky-200: #075985;
+  --color-sky-950: #f0f9ff;
+}
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  background-color: var(--color-zinc-950);
+  color: var(--color-zinc-100);
+}
+
+::selection {
+  background: color-mix(in oklab, var(--color-gold-500) 35%, transparent);
+}
+
+/* Scrollbar discreta */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-zinc-800);
+  border-radius: 8px;
+  border: 2px solid var(--color-zinc-950);
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+input[type="date"]::-webkit-calendar-picker-indicator,
+input[type="time"]::-webkit-calendar-picker-indicator {
+  filter: invert(0.7);
+  cursor: pointer;
+}
+
+/* No claro o ícone do seletor de data já nasce escuro: inverter só o estragaria. */
+:root[data-theme="light"] input[type="date"]::-webkit-calendar-picker-indicator,
+:root[data-theme="light"] input[type="time"]::-webkit-calendar-picker-indicator {
+  filter: none;
+}
+
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.animate-fade-up {
+  animation: fade-up 0.25s ease-out both;
+}

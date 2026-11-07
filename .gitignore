@@ -1,0 +1,38 @@
+# deps
+/node_modules
+
+# next
+/.next/
+/out/
+
+# production
+/build
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# env
+.env
+.env.local
+.env.*.local
+
+# WhatsApp authentication and runtime data
+baileys_auth_*/
+*.log
+/.tmp-twd/
+/.freebuff/
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+
+# database
+/prisma/dev.db
+/prisma/dev.db-journal
+*.sqlite3

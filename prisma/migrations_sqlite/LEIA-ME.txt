@@ -1,0 +1,15 @@
+Arquivo morto — não aponte o Prisma para cá.
+
+Estas são as 4 migrations que construíram o `prisma/dev.db` local entre 02/10 e 01/11. O SQL
+delas é dialeto SQLite (ALTER TABLE com coluna NOT NULL sem DEFAULT, reconstrução de tabela para
+acrescentar coluna, PRAGMA de foreign_keys) e não roda num Postgres: o Prisma nem chega a tentar,
+ele compara o `provider` do `migration_lock.toml` com o do `schema.prisma` e recusa o diretório.
+
+Elas continuam aqui porque são o único registro de POR QUE o schema tem certas coisas — por
+exemplo o `updatedAt` nullable de `WhatsAppMessage`, que existe porque o SQLite reconstruiu a
+tabela e não conseguiu preencher as linhas históricas.
+
+O histórico vivo do Postgres está em `prisma/migrations`, começando do baseline
+`20261101000000_init_postgres`, gerado com:
+
+  npx prisma migrate diff --from-empty --to-schema-datamodel prisma/schema.prisma --script
