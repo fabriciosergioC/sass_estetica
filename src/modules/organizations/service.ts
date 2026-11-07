@@ -33,7 +33,7 @@ const DEFAULT_HOURS: Array<{ weekday: number; openTime: string; closeTime: strin
   { weekday: 6, openTime: "09:00", closeTime: "18:00", closed: false },
 ];
 
-const DEFAULT_TEMPLATES: Array<{ key: string; name: string; body: string }> = [
+export const DEFAULT_TEMPLATES: Array<{ key: string; name: string; body: string }> = [
   {
     key: "confirmation",
     name: "Confirmação de agendamento",

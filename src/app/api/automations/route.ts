@@ -3,7 +3,7 @@ import { z } from "zod";
 import { db } from "@/lib/db";
 import { jsonOk, handleApiError } from "@/lib/api";
 import { requirePermission } from "@/lib/auth/guards";
-import { DEFAULT_RULES } from "@/modules/organizations/service";
+import { DEFAULT_RULES, DEFAULT_TEMPLATES } from "@/modules/organizations/service";
 
 /** GET /api/automations — regras, templates e execuções recentes da org. */
 export async function GET() {
@@ -26,6 +26,13 @@ export async function GET() {
         await db.automationRule.create({
           data: { orgId, event: rule.event, action: rule.action, config: defaultConfig },
         });
+      }
+    }
+
+    const existingTemplates = await db.messageTemplate.findMany({ where: { orgId } });
+    for (const template of DEFAULT_TEMPLATES) {
+      if (!existingTemplates.some((current) => current.key === template.key)) {
+        await db.messageTemplate.create({ data: { orgId, ...template } });
       }
     }
 

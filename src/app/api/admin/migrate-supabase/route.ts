@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Prisma, PrismaClient } from "@prisma/client";
 import { db } from "@/lib/db";
-import { DEFAULT_RULES } from "@/modules/organizations/service";
+import { DEFAULT_RULES, DEFAULT_TEMPLATES } from "@/modules/organizations/service";
 
 function topologicalModels() {
   const models = (Prisma as any).dmmf.datamodel.models as Array<{
@@ -72,6 +72,12 @@ export async function GET(req: NextRequest) {
           });
           created++;
         }
+      }
+      const existingTemplates = await db.messageTemplate.findMany({ where: { orgId: org.id } });
+      for (const template of DEFAULT_TEMPLATES) {
+        if (existingTemplates.some((current) => current.key === template.key)) continue;
+        await db.messageTemplate.create({ data: { orgId: org.id, ...template } });
+        created++;
       }
       counts[org.name] = created;
     }
