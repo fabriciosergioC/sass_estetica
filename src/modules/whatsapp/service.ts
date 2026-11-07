@@ -54,6 +54,32 @@ export async function adapterContext(orgId: string): Promise<AdapterContext> {
  * Estado consolidado da conexão (§2): adapter ao vivo + espelho do banco + QR, numa chamada.
  * É o que a tela de Configurações e o cabeçalho do painel de conversas usam.
  */
+async function retryRecentFailedConfirmations(orgId: string): Promise<number> {
+  const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  const failed = await db.whatsAppMessage.findMany({
+    where: {
+      orgId,
+      direction: "OUT",
+      templateKey: "confirmation",
+      status: "FAILED",
+      createdAt: { gte: since },
+    },
+    select: { id: true },
+    take: 20,
+  });
+
+  let retried = 0;
+  for (const message of failed) {
+    await db.whatsAppMessage.update({
+      where: { id: message.id },
+      data: { status: "QUEUED", error: null },
+    });
+    await queueSendMessage({ orgId, messageId: message.id, dedupeKey: `retry-confirmation:${message.id}` });
+    retried++;
+  }
+  return retried;
+}
+
 export async function getConnectionView(orgId: string): Promise<ConnectionView> {
   const ctx = await adapterContext(orgId);
   const adapter = getAdapter(await providerNameForOrg(orgId));
@@ -68,6 +94,12 @@ export async function getConnectionView(orgId: string): Promise<ConnectionView> 
       provider: adapter.name,
       mock: adapter.mock,
     };
+  }
+
+  if (live.state === "CONNECTED") {
+    void retryRecentFailedConfirmations(orgId).catch((err) => {
+      console.error("[WhatsApp] Falha ao reativar confirmações pendentes:", err);
+    });
   }
 
   // O adapter também é a fonte do QR: no Baileys ele já está em memória, sem tocar no disco.
