@@ -4,8 +4,8 @@
   "private": true,
   "scripts": {
     "dev": "next dev --port 3001 --turbopack",
-    "build": "prisma migrate deploy && next build",
-    "start": "next start",
+    "build": "next build",
+    "start": "prisma migrate deploy && next start",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
     "db:deploy": "prisma migrate deploy",
