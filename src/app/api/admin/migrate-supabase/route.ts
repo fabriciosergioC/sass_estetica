@@ -62,17 +62,16 @@ export async function POST(req: NextRequest) {
       if (!sourceDelegate || !destinationDelegate) continue;
 
       let copied = 0;
-      let cursor: any;
+      let skipped = 0;
       while (true) {
         const rows = await sourceDelegate.findMany({
           take: 500,
-          ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
-          orderBy: { id: "asc" },
+          skip: skipped,
         });
         if (rows.length === 0) break;
         await destinationDelegate.createMany({ data: rows, skipDuplicates: true });
         copied += rows.length;
-        cursor = rows[rows.length - 1].id;
+        skipped += rows.length;
       }
       counts[modelName] = copied;
     }
