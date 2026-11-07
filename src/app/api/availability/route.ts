@@ -28,7 +28,7 @@ export async function GET(req: NextRequest) {
 
     const [y, m, d] = dateStr.split("-").map(Number);
     if (!y || !m || !d) return jsonOk({ error: "Data inválida." }, 400);
-    const date = new Date(y, m - 1, d);
+    const date = new Date(`${dateStr}T12:00:00-03:00`);
 
     const barber = await db.barber.findFirst({ where: { id: barberId, orgId } });
     if (!barber) return jsonOk({ error: "Barbeiro não encontrado." }, 404);

@@ -40,31 +40,6 @@ function topologicalModels() {
   return result;
 }
 
-export async function GET(req: NextRequest) {
-  const expected = process.env.SUPABASE_MIGRATION_TOKEN;
-  if (!expected || req.headers.get("authorization") !== `Bearer ${expected}`) {
-    return NextResponse.json({ error: "Não autorizado" }, { status: 401 });
-  }
-
-  try {
-    const saturday = await db.businessHour.findMany({
-      where: { weekday: 6 },
-      include: { barber: { select: { name: true } }, org: { select: { name: true } } },
-    });
-    const timeOff = await db.barberTimeOff.findMany({
-      where: { endAt: { gte: new Date("2026-11-07T00:00:00-03:00") }, startAt: { lte: new Date("2026-11-08T00:00:00-03:00") } },
-      include: { barber: { select: { name: true } } },
-    });
-    const appointments = await db.appointment.findMany({
-      where: { startAt: { gte: new Date("2026-11-07T00:00:00-03:00") }, endAt: { lt: new Date("2026-11-08T00:00:00-03:00") } },
-      select: { startAt: true, endAt: true, status: true, barber: { select: { name: true } } },
-    });
-    return NextResponse.json({ saturday, timeOff, appointments });
-  } catch (error: any) {
-    return NextResponse.json({ error: error?.message ?? "Falha ao diagnosticar" }, { status: 500 });
-  }
-}
-
 export async function POST(req: NextRequest) {
   const expected = process.env.SUPABASE_MIGRATION_TOKEN;
   if (!expected || req.headers.get("authorization") !== `Bearer ${expected}`) {

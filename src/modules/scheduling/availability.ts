@@ -9,8 +9,26 @@ function minutesOf(hhmm: string): number {
   return h * 60 + m;
 }
 
-function fmtHHMM(date: Date): string {
-  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+function zonedParts(date: Date) {
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Sao_Paulo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  });
+  const parts = formatter.formatToParts(date);
+  const get = (type: string) => parts.find((part) => part.type === type)?.value ?? "00";
+  return {
+    dateKey: `${get("year")}-${get("month")}-${get("day")}`,
+    minute: Number(get("hour")) * 60 + Number(get("minute")),
+  };
+}
+
+function fmtHHMM(minutes: number): string {
+  return `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`;
 }
 
 function overlaps(aStart: number, aEnd: number, bStart: number, bEnd: number): boolean {
@@ -25,7 +43,9 @@ export type Slot = {
 
 /** Janela de funcionamento efetiva (barbeiro > padrão da org) para um dia. */
 async function workingWindow(orgId: string, barberId: string, day: Date) {
-  const weekday = day.getDay();
+  const dayKey = zonedParts(day).dateKey;
+  const [year, month, dayOfMonth] = dayKey.split("-").map(Number);
+  const weekday = new Date(Date.UTC(year, month - 1, dayOfMonth)).getUTCDay();
   const hours = await db.businessHour.findMany({
     where: { orgId, weekday, OR: [{ barberId }, { barberId: null }] },
   });
@@ -58,8 +78,10 @@ export async function getAvailability(opts: {
   const window = await workingWindow(orgId, barberId, date);
   if (!window) return [];
 
-  const dayStart = new Date(date.getFullYear(), date.getMonth(), date.getDate());
-  const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
+  const selectedKey = zonedParts(date).dateKey;
+  const [year, month, dayOfMonth] = selectedKey.split("-").map(Number);
+  const dayStart = new Date(Date.UTC(year, month - 1, dayOfMonth));
+  const dayEnd = new Date(Date.UTC(year, month - 1, dayOfMonth + 1));
 
   const [appointments, timeOffs] = await Promise.all([
     db.appointment.findMany({
@@ -78,49 +100,48 @@ export async function getAvailability(opts: {
     }),
   ]);
 
+  const selectedDateKey = selectedKey;
   const busy = [
-    ...appointments.map((a) => ({
-      start: a.startAt.getHours() * 60 + a.startAt.getMinutes(),
-      end: a.endAt.getHours() * 60 + a.endAt.getMinutes(),
-    })),
-    ...timeOffs.map((t) => {
-      const isSameDayStart =
-        t.startAt.getFullYear() === dayStart.getFullYear() &&
-        t.startAt.getMonth() === dayStart.getMonth() &&
-        t.startAt.getDate() === dayStart.getDate();
-      const isEndsNextDay = t.endAt.getTime() >= dayEnd.getTime();
+    ...appointments.map((a) => {
+      const start = zonedParts(a.startAt);
+      const end = zonedParts(a.endAt);
       return {
-        start: isSameDayStart ? t.startAt.getHours() * 60 + t.startAt.getMinutes() : 0,
-        end: isEndsNextDay ? 24 * 60 : t.endAt.getHours() * 60 + t.endAt.getMinutes(),
+        start: start.dateKey === selectedDateKey ? start.minute : 0,
+        end: end.dateKey === selectedDateKey ? end.minute : 24 * 60,
+      };
+    }),
+    ...timeOffs.map((t) => {
+      const start = zonedParts(t.startAt);
+      const end = zonedParts(t.endAt);
+      return {
+        start: start.dateKey === selectedDateKey ? start.minute : 0,
+        end: end.dateKey === selectedDateKey ? end.minute : 24 * 60,
       };
     }),
   ];
 
   const slots: Slot[] = [];
   const now = new Date();
-  const isToday =
-    now.getFullYear() === dayStart.getFullYear() &&
-    now.getMonth() === dayStart.getMonth() &&
-    now.getDate() === dayStart.getDate();
-  const nowMin = now.getHours() * 60 + now.getMinutes();
+  const isToday = zonedParts(now).dateKey === selectedDateKey;
+  const nowMin = zonedParts(now).minute;
 
   for (let start = window.openMin; start + durationMin <= window.closeMin; start += step) {
     const end = start + durationMin;
 
     if (isToday && start <= nowMin) {
-      slots.push({ start: fmtHHMM(new Date(dayStart.getTime() + start * 60000)), available: false, reason: "passado" });
+      slots.push({ start: fmtHHMM(start), available: false, reason: "passado" });
       continue;
     }
     if (window.breakStart !== null && window.breakEnd !== null && overlaps(start, end, window.breakStart, window.breakEnd)) {
-      slots.push({ start: fmtHHMM(new Date(dayStart.getTime() + start * 60000)), available: false, reason: "pausa" });
+      slots.push({ start: fmtHHMM(start), available: false, reason: "pausa" });
       continue;
     }
     const conflict = busy.find((b) => overlaps(start, end, b.start, b.end));
     if (conflict) {
-      slots.push({ start: fmtHHMM(new Date(dayStart.getTime() + start * 60000)), available: false, reason: "ocupado" });
+      slots.push({ start: fmtHHMM(start), available: false, reason: "ocupado" });
       continue;
     }
-    slots.push({ start: fmtHHMM(new Date(dayStart.getTime() + start * 60000)), available: true });
+    slots.push({ start: fmtHHMM(start), available: true });
   }
 
   return slots;
@@ -148,14 +169,14 @@ export async function assertSlotFree(opts: {
     select: { id: true, startAt: true },
   });
   if (conflict) {
-    throw new Error(`CONFLITO:${fmtHHMM(conflict.startAt)}`);
+    throw new Error(`CONFLITO:${fmtHHMM(zonedParts(conflict.startAt).minute)}`);
   }
 
   const day = new Date(startAt);
   const window = await workingWindow(orgId, barberId, day);
   if (!window) throw new Error("FORA_DO_HORARIO:O atendente não atende neste dia.");
-  const startMin = startAt.getHours() * 60 + startAt.getMinutes();
-  const endMin = endAt.getHours() * 60 + endAt.getMinutes();
+  const startMin = zonedParts(startAt).minute;
+  const endMin = zonedParts(endAt).minute;
   if (startMin < window.openMin || endMin > window.closeMin) {
     throw new Error("FORA_DO_HORARIO:Fora do horário de funcionamento.");
   }
@@ -168,7 +189,7 @@ export async function assertSlotFree(opts: {
   const timeOff = await db.barberTimeOff.findFirst({
     where: { orgId, barberId, startAt: { lt: dayEnd }, endAt: { gt: dayStart } },
   });
-  if (timeOff && overlaps(startMin, endMin, timeOff.startAt.getHours() * 60 + timeOff.startAt.getMinutes(), timeOff.endAt.getHours() * 60 + timeOff.endAt.getMinutes())) {
+  if (timeOff && overlaps(startMin, endMin, zonedParts(timeOff.startAt).minute, zonedParts(timeOff.endAt).minute)) {
     throw new Error("FORA_DO_HORARIO:O atendente está de folga neste período.");
   }
 }
