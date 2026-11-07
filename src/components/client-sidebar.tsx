@@ -59,7 +59,7 @@ export function ClientSidebar({
           </svg>
         </button>
         <span className="font-semibold tracking-tight">{orgName}</span>
-        <div className="h-8 w-8 rounded-full text-center text-xs leading-8 text-[[color:var(--accent-c)]]" style={{ backgroundColor: "color-mix(in srgb, var(--accent-c) 15%, transparent)" }}>
+        <div className="h-8 w-8 rounded-full text-center text-xs leading-8 text-[color:var(--accent-c)]" style={{ backgroundColor: "color-mix(in srgb, var(--accent-c) 15%, transparent)" }}>
           {initials}
         </div>
       </div>

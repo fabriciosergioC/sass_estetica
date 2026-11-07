@@ -40,7 +40,7 @@ async function main() {
   console.log(`\n🔐 Credenciais carregadas:`);
   console.log(`   hasCreds: ${!!state.creds}`);
   console.log(`   registrationId: ${state.creds?.registrationId ?? "nenhum"}`);
-  console.log(`   identityKeys: ${state.creds?.identityKey ? "presentes" : "ausentes"}`);
+  console.log(`   identityKeys: ${state.creds?.signedIdentityKey ? "presentes" : "ausentes"}`);
 
   const { version, isLatest } = await fetchLatestBaileysVersion();
   console.log(`\n📦 Versão Baileys: ${version.join(".")} (Latest: ${isLatest})`);
@@ -93,7 +93,7 @@ async function main() {
       closeCount++;
       const code = (lastDisconnect?.error as any)?.output?.statusCode;
       console.log(`\n❌ Conexão fechada (${closeCount}ª vez). statusCode=${code}`);
-      console.log(`   Motivo traduzido: ${code === DisconnectReason.loggedOut ? "LOGOUT" : code === DisconnectReason.restricted ? "RESTRITO" : code ?? "desconhecido"}`);
+      console.log(`   Motivo traduzido: ${code === DisconnectReason.loggedOut ? "LOGOUT" : code ?? "desconhecido"}`);
       if (closeCount > 2) {
         console.log("\n🛑 Encerrando diagnóstico.");
         process.exit(0);
