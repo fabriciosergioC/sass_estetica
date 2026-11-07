@@ -2,7 +2,7 @@ import { db } from "@/lib/db";
 import { assertSlotFree } from "./availability";
 import { publishEvent } from "@/modules/automation/events";
 import { enqueueJob } from "@/modules/automation/jobs";
-import { sendTemplateMessage, formatDateTimeBR, type TemplateKey, type AppointmentVars } from "@/modules/whatsapp/messages";
+import { sendTemplateMessage, formatDateTimeBR, type AppointmentVars } from "@/modules/whatsapp/messages";
 import { publishAppointmentEvent } from "./appointments-bus";
 
 export const ACTIVE_STATUSES = ["SCHEDULED", "CONFIRMED", "IN_SERVICE"] as const;
@@ -124,37 +124,9 @@ export async function createAppointment(opts: {
   // Sincroniza o status da conversa do WhatsApp para "Aberta" (OPEN)
   await syncWhatsAppConversationStatus(opts.orgId, appointment.id, appointment.status as AppointmentStatus);
 
-  // Disparo imediato da mensagem inicial baseada na data do agendamento:
-  // mesmo dia → confirmação imediata; outro dia → lembrete 24h antes
-  try {
-    const isSameDay = appointment.startAt.toDateString() === new Date().toDateString();
-    const templateKey: TemplateKey = isSameDay ? "confirmation" : "reminder_24h";
-    let runAt: Date | undefined;
-
-    if (!isSameDay) {
-      runAt = new Date(appointment.startAt.getTime() - 24 * 60 * 60 * 1000);
-      if (runAt.getTime() < Date.now()) {
-        runAt = new Date();
-      }
-    }
-
-    await sendTemplateMessage({
-      orgId: opts.orgId,
-      templateKey,
-      runAt,
-      vars: {
-        appointmentId: appointment.id,
-        customerId: customer.id,
-        phone: customer.phone,
-        customerName: customer.name,
-        serviceName: service.name,
-        barberName: barber.name,
-        startAt: appointment.startAt,
-      },
-    });
-  } catch (err) {
-    console.error("[createAppointment] Erro ao disparar WhatsApp inicial:", err);
-  }
+  // A criação não envia mensagem imediata. O lembrete reminder_24h é a única
+  // automação de agendamento e será executada 24 horas antes ou imediatamente
+  // quando um horário posterior já estiver dentro dessa antecedência.
 
   publishAppointmentEvent({
     type: "appointment.created",

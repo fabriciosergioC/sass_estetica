@@ -86,14 +86,11 @@ export const DEFAULT_TEMPLATES: Array<{ key: string; name: string; body: string 
  * e o cliente que agenda pelo link nunca aperta.
  */
 export const DEFAULT_RULES: Array<{ event: string; action: string; config: Record<string, unknown> }> = [
-  { event: "appointment.created", action: "send_whatsapp", config: { template: "confirmation" } },
   { event: "appointment.created", action: "schedule_reminder", config: { template: "reminder_24h", hoursBefore: 24 } },
-  { event: "appointment.created", action: "schedule_reminder", config: { template: "reminder_2h", hoursBefore: 2 } },
   { event: "appointment.cancelled", action: "send_whatsapp", config: { template: "cancellation" } },
   { event: "appointment.rescheduled", action: "send_whatsapp", config: { template: "reschedule" } },
-  // Remarcar cancela os lembretes na hora antiga (ver `events.ts`) e reagenda estes na nova.
+  // Remarcar cancela os lembretes na hora antiga (ver `events.ts`) e reagenda o lembrete na nova.
   { event: "appointment.rescheduled", action: "schedule_reminder", config: { template: "reminder_24h", hoursBefore: 24 } },
-  { event: "appointment.rescheduled", action: "schedule_reminder", config: { template: "reminder_2h", hoursBefore: 2 } },
   { event: "appointment.completed", action: "schedule_reminder", config: { template: "post_visit", delayMinutes: 30 } },
 ];
 

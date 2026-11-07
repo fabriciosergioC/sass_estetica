@@ -137,7 +137,7 @@ async function main() {
 
     const templates = [
       { key: "confirmation", name: "Confirmação", body: "Olá, {{cliente}}! Seu horário está confirmado: {{servico}} com {{barbeiro}} em {{data}} às {{hora}} na {{barbearia}}. Até logo! ✂️" },
-      { key: "reminder_24h", name: "Lembrete 24h", body: "Olá, {{cliente}}! Lembrete: seu horário na {{barbearia}} é amanhã, {{data}} às {{hora}}, com {{barbeiro}}. Confirma presença?" },
+      { key: "reminder_24h", name: "Lembrete 24h", body: "Olá, {{cliente}}! Lembrete: seu horário na {{barbearia}} é amanhã, {{data}} às {{hora}}, com {{barbeiro}}. Confirma presença? Responda SIM para confirmar." },
       { key: "cancellation", name: "Cancelamento", body: "Olá, {{cliente}}! Seu horário de {{data}} às {{hora}} na {{barbearia}} foi cancelado." },
       { key: "reschedule", name: "Remarcação", body: "Olá, {{cliente}}! Seu horário na {{barbearia}} foi remarcado para {{data}} às {{hora}} com {{barbeiro}}." },
       { key: "post_visit", name: "Pós-atendimento", body: "Olá, {{cliente}}! Obrigado pela visita na {{barbearia}}! Esperamos você novamente. Se puder, deixe sua avaliação. 💈" },
@@ -150,7 +150,7 @@ async function main() {
       data: [
         { event: "appointment.cancelled", action: "send_whatsapp", config: { template: "cancellation" } },
         { event: "appointment.rescheduled", action: "send_whatsapp", config: { template: "reschedule" } },
-        { event: "appointment.confirmed", action: "schedule_reminder", config: { template: "reminder_24h", hoursBefore: 24 } },
+        { event: "appointment.created", action: "schedule_reminder", config: { template: "reminder_24h", hoursBefore: 24 } },
         { event: "appointment.completed", action: "schedule_reminder", config: { template: "post_visit", delayMinutes: 30 } },
         { event: "appointment.no_show", action: "notify_admin", config: { title: "Falta registrada" } },
         { event: "slot.opened", action: "create_opportunity", config: {} },
