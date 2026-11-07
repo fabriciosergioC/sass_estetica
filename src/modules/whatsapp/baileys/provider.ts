@@ -1450,6 +1450,14 @@ export async function ensureConnected(orgId: string, timeoutMs = 20_000): Promis
   if (g.connectionState.status !== "CONNECTED") {
     if (!g.sock) {
       if (!hasPairedSession(orgId)) {
+        try {
+          await db.whatsAppConnection.updateMany({
+            where: { orgId },
+            data: { status: "PENDING_QR" },
+          });
+        } catch (err) {
+          console.warn("[Baileys] Não foi possível reconciliar o estado da conexão:", err);
+        }
         return {
           status: "PENDING_QR",
           detail: "Nenhum pareamento salvo para esta organização: conecte escaneando o QR Code.",
