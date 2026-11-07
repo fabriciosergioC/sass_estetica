@@ -16,3 +16,13 @@ export function formatBusinessTime(date: Date | string): string {
     hourCycle: "h23",
   }).format(value);
 }
+
+export function isBusinessSameDay(left: Date | string, right: Date | string = new Date()): boolean {
+  const formatDay = (value: Date | string) => new Intl.DateTimeFormat("en-CA", {
+    timeZone: BUSINESS_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(typeof value === "string" ? new Date(value) : value);
+  return formatDay(left) === formatDay(right);
+}

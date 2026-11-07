@@ -31,12 +31,32 @@ export async function POST(req: NextRequest) {
       }
 
       await tx.messageTemplate.updateMany({
+        where: { orgId: organization.id, key: "confirmation" },
+        data: {
+          name: "Confirmação de agendamento",
+          body: "Olá, {{cliente}}! Seu horário está confirmado: {{servico}} com {{barbeiro}} em {{data}} às {{hora}} na {{barbearia}}. Até logo! ✨",
+        },
+      });
+      await tx.messageTemplate.updateMany({
         where: { orgId: organization.id, key: "reminder_24h" },
         data: {
           name: "Lembrete 24h antes",
           body: "Olá, {{cliente}}! Lembrete: seu horário na {{barbearia}} é amanhã, {{data}} às {{hora}}, com {{barbeiro}}. Confirma presença? Responda SIM para confirmar.",
         },
       });
+
+      const scheduleRules = await tx.automationRule.findMany({
+        where: { orgId: organization.id, event: "appointment.created", action: "schedule_reminder" },
+        select: { id: true, config: true },
+      });
+      const existing24h = scheduleRules.find((rule) => {
+        try { return JSON.parse(rule.config || "{}").template === "reminder_24h"; } catch { return false; }
+      });
+      if (existing24h) {
+        await tx.automationRule.update({ where: { id: existing24h.id }, data: { enabled: true, config: JSON.stringify({ template: "reminder_24h", hoursBefore: 24 }) } });
+      } else {
+        await tx.automationRule.create({ data: { orgId: organization.id, event: "appointment.created", action: "schedule_reminder", config: JSON.stringify({ template: "reminder_24h", hoursBefore: 24 }), enabled: true } });
+      }
 
       const cancelledMessages = await tx.whatsAppMessage.updateMany({
         where: { orgId: organization.id, status: "QUEUED", templateKey: { in: ["confirmation", "reminder_2h"] } },

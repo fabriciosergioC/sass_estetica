@@ -1,5 +1,6 @@
 import { db } from "@/lib/db";
 import { assertSlotFree } from "./availability";
+import { isBusinessSameDay } from "@/lib/datetime";
 import { publishEvent } from "@/modules/automation/events";
 import { enqueueJob } from "@/modules/automation/jobs";
 import { sendTemplateMessage, formatDateTimeBR, type AppointmentVars } from "@/modules/whatsapp/messages";
@@ -124,9 +125,27 @@ export async function createAppointment(opts: {
   // Sincroniza o status da conversa do WhatsApp para "Aberta" (OPEN)
   await syncWhatsAppConversationStatus(opts.orgId, appointment.id, appointment.status as AppointmentStatus);
 
-  // A criação não envia mensagem imediata. O lembrete reminder_24h é a única
-  // automação de agendamento e será executada 24 horas antes ou imediatamente
-  // quando um horário posterior já estiver dentro dessa antecedência.
+  // Mesmo dia: confirmação imediata. Dias posteriores: somente o lembrete 24h,
+  // agendado pela regra reminder_24h para 24 horas antes do horário.
+  if (isBusinessSameDay(appointment.startAt)) {
+    try {
+      await sendTemplateMessage({
+        orgId: opts.orgId,
+        templateKey: "confirmation",
+        vars: {
+          appointmentId: appointment.id,
+          customerId: customer.id,
+          phone: customer.phone,
+          customerName: customer.name,
+          serviceName: service.name,
+          barberName: barber.name,
+          startAt: appointment.startAt,
+        },
+      });
+    } catch (err) {
+      console.error("[createAppointment] Erro ao enviar confirmação do mesmo dia:", err);
+    }
+  }
 
   publishAppointmentEvent({
     type: "appointment.created",
