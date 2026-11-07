@@ -2,6 +2,9 @@ import { NextRequest } from "next/server";
 import { db } from "@/lib/db";
 import { jsonOk, handleApiError } from "@/lib/api";
 
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 /** GET /api/public/[slug]/config — dados públicos da barbearia (sem auth). */
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ slug: string }> }) {
   try {
@@ -30,7 +33,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ slu
       }),
     ]);
 
-    return jsonOk({
+    const response = jsonOk({
       org: {
         name: org.name,
         slug: org.slug,
@@ -45,6 +48,8 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ slu
       services,
       barbers: barbers.map((b) => ({ ...b, serviceIds: b.services.map((s) => s.serviceId) })),
     });
+    response.headers.set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+    return response;
 
   } catch (err) {
     return handleApiError(err);

@@ -3,6 +3,9 @@ import { db } from "@/lib/db";
 import { jsonOk, handleApiError } from "@/lib/api";
 import { getAvailability } from "@/modules/scheduling/availability";
 
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 /** GET /api/public/[slug]/slots?serviceId&barberId&date=YYYY-MM-DD — disponibilidade pública (sem auth). */
 export async function GET(req: NextRequest, { params }: { params: Promise<{ slug: string }> }) {
   try {
@@ -34,10 +37,12 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ slug
 
     const [y, m, d] = dateStr.split("-").map(Number);
     if (!y || !m || !d) return jsonOk({ error: "Data inválida." }, 400);
-    const date = new Date(y, m - 1, d);
+    const date = new Date(Date.UTC(y, m - 1, d, 12));
 
     const slots = await getAvailability({ orgId: org.id, barberId: barber.id, date, durationMin: service.durationMin });
-    return jsonOk({ slots });
+    const response = jsonOk({ slots });
+    response.headers.set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+    return response;
   } catch (err) {
     return handleApiError(err);
   }
