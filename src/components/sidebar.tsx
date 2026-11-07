@@ -18,7 +18,7 @@ const NAV: NavItem[] = [
   { href: "/app", label: "Dashboard", icon: "📊", roles: ["ADMIN", "MANAGER", "RECEPTIONIST", "BARBER"] },
   { href: "/app/agenda", label: "Agenda", icon: "📅", roles: ["ADMIN", "MANAGER", "RECEPTIONIST", "BARBER"] },
   { href: "/app/clientes", label: "Clientes", icon: "👥", roles: ["ADMIN", "MANAGER", "RECEPTIONIST", "BARBER"] },
-  { href: "/app/barbeiros", label: "Atendentes", icon: "✨", roles: ["ADMIN", "MANAGER"] },
+  { href: "/app/estetica", label: "Estética", icon: "✨", roles: ["ADMIN", "MANAGER"] },
   { href: "/app/servicos", label: "Serviços", icon: "✨", roles: ["ADMIN", "MANAGER"] },
   // Oculto por pedido do operador em 01/11/2026. A rota /app/oportunidades continua viva
   // (o detector de oportunidades e as automações seguem gravando em Opportunity),
