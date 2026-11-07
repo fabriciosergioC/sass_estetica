@@ -3,11 +3,32 @@ import { z } from "zod";
 import { db } from "@/lib/db";
 import { jsonOk, handleApiError } from "@/lib/api";
 import { requirePermission } from "@/lib/auth/guards";
+import { DEFAULT_RULES } from "@/modules/organizations/service";
 
 /** GET /api/automations — regras, templates e execuções recentes da org. */
 export async function GET() {
   try {
     const { orgId } = await requirePermission("automations:manage");
+    const existingRules = await db.automationRule.findMany({ where: { orgId } });
+    for (const rule of DEFAULT_RULES) {
+      const defaultConfig = JSON.stringify(rule.config);
+      const defaultTemplate = typeof rule.config.template === "string" ? rule.config.template : null;
+      const exists = existingRules.some((current) => {
+        if (current.event !== rule.event || current.action !== rule.action) return false;
+        try {
+          const currentConfig = JSON.parse(current.config || "{}") as { template?: string };
+          return currentConfig.template === defaultTemplate;
+        } catch {
+          return false;
+        }
+      });
+      if (!exists) {
+        await db.automationRule.create({
+          data: { orgId, event: rule.event, action: rule.action, config: defaultConfig },
+        });
+      }
+    }
+
     const [rules, templates, executions] = await Promise.all([
       db.automationRule.findMany({ where: { orgId }, orderBy: [{ event: "asc" }, { createdAt: "asc" }] }),
       db.messageTemplate.findMany({ where: { orgId }, orderBy: [{ key: "asc" }] }),
