@@ -1,5 +1,6 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
+import { localDateTime } from "@/lib/datetime";
 import { db } from "@/lib/db";
 import { jsonOk, handleApiError } from "@/lib/api";
 import { requirePermission } from "@/lib/auth/guards";
@@ -56,9 +57,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     const { id } = await params;
     const body = rescheduleSchema.parse(await req.json());
 
-    const [y, m, d] = body.date.split("-").map(Number);
-    const [hh, mm] = body.time.split(":").map(Number);
-    const newStartAt = new Date(y, m - 1, d, hh, mm);
+    const newStartAt = localDateTime(body.date, body.time);
 
     try {
       const appointment = await rescheduleAppointment({

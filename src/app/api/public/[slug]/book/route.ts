@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { localDateTime } from "@/lib/datetime";
 import { z } from "zod";
 import { db } from "@/lib/db";
 import { jsonOk, handleApiError } from "@/lib/api";
@@ -68,9 +69,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ slu
     });
     if (!performs) return NextResponse.json({ error: "Este atendente não executa este serviço." }, { status: 400, headers: corsHeaders });
 
-    const [y, m, d] = body.date.split("-").map(Number);
-    const [hh, mm] = body.time.split(":").map(Number);
-    const startAt = new Date(y, m - 1, d, hh, mm);
+    const startAt = localDateTime(body.date, body.time);
     if (startAt.getTime() < Date.now() - 60_000) {
       return NextResponse.json({ error: "Escolha um horário futuro." }, { status: 400, headers: corsHeaders });
     }

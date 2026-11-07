@@ -4,6 +4,7 @@ import { db } from "@/lib/db";
 import { jsonOk, handleApiError } from "@/lib/api";
 import { requirePermission } from "@/lib/auth/guards";
 import { createAppointment, BusinessError } from "@/modules/scheduling/appointments";
+import { localDateTime } from "@/lib/datetime";
 
 function friendlyError(err: unknown): never {
   if (err instanceof BusinessError) throw err;
@@ -66,9 +67,7 @@ export async function POST(req: NextRequest) {
     const { orgId, session } = await requirePermission("appointments:write");
     const body = createSchema.parse(await req.json());
 
-    const [y, m, d] = body.date.split("-").map(Number);
-    const [hh, mm] = body.time.split(":").map(Number);
-    const startAt = new Date(y, m - 1, d, hh, mm);
+    const startAt = localDateTime(body.date, body.time);
 
     try {
       const appointment = await createAppointment({

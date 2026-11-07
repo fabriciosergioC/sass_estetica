@@ -66,5 +66,10 @@ export function toDateInput(d: Date): string {
 
 export function formatTimeHHMM(date: Date | string): string {
   const d = typeof date === "string" ? new Date(date) : date;
-  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  return new Intl.DateTimeFormat("pt-BR", {
+    timeZone: "America/Sao_Paulo",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).format(d);
 }

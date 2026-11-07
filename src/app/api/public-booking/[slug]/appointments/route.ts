@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+import { localDateTime } from "@/lib/datetime";
+import { localDateTime } from "@/lib/datetime";
 import { db } from "@/lib/db";
 import { handleApiError } from "@/lib/api";
 import { createAppointment } from "@/modules/scheduling/appointments";
@@ -56,9 +58,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ slu
       });
     }
 
-    const [y, m, d] = dateStr.split("-").map(Number);
-    const [hh, mm] = timeStr.split(":").map(Number);
-    const startAt = new Date(y, m - 1, d, hh, mm);
+    const startAt = localDateTime(dateStr, timeStr);
 
     // Resolve o barbeiro (se "any", pega o primeiro disponível ou ativo)
     let targetBarberId = barberId;
