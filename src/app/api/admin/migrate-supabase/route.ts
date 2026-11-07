@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Prisma, PrismaClient } from "@prisma/client";
 import { db } from "@/lib/db";
+import { DEFAULT_RULES } from "@/modules/organizations/service";
 
 function topologicalModels() {
   const models = (Prisma as any).dmmf.datamodel.models as Array<{
@@ -38,6 +39,47 @@ function topologicalModels() {
     }
   }
   return result;
+}
+
+export async function GET(req: NextRequest) {
+  const expected = process.env.SUPABASE_MIGRATION_TOKEN;
+  if (!expected || req.headers.get("authorization") !== `Bearer ${expected}`) {
+    return NextResponse.json({ error: "Não autorizado" }, { status: 401 });
+  }
+
+  try {
+    const orgs = await db.organization.findMany({ select: { id: true, name: true } });
+    const counts: Record<string, number> = {};
+
+    for (const org of orgs) {
+      let created = 0;
+      const existing = await db.automationRule.findMany({ where: { orgId: org.id } });
+
+      for (const rule of DEFAULT_RULES) {
+        const template = typeof rule.config.template === "string" ? rule.config.template : null;
+        const exists = existing.some((current) => {
+          if (current.event !== rule.event || current.action !== rule.action) return false;
+          try {
+            const config = JSON.parse(current.config || "{}") as { template?: string };
+            return config.template === template;
+          } catch {
+            return false;
+          }
+        });
+        if (!exists) {
+          await db.automationRule.create({
+            data: { orgId: org.id, event: rule.event, action: rule.action, config: JSON.stringify(rule.config) },
+          });
+          created++;
+        }
+      }
+      counts[org.name] = created;
+    }
+
+    return NextResponse.json({ ok: true, counts });
+  } catch (error: any) {
+    return NextResponse.json({ error: error?.message ?? "Falha ao aplicar regras" }, { status: 500 });
+  }
 }
 
 export async function POST(req: NextRequest) {
