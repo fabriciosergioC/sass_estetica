@@ -121,14 +121,12 @@ export async function getAvailability(opts: {
   ];
 
   const slots: Slot[] = [];
-  const now = new Date();
-  const isToday = zonedParts(now).dateKey === selectedDateKey;
-  const nowMin = zonedParts(now).minute;
 
   for (let start = window.openMin; start + durationMin <= window.closeMin; start += step) {
     const end = start + durationMin;
 
-    if (isToday && start <= nowMin) {
+    const slotInstant = new Date(`${selectedDateKey}T${fmtHHMM(start)}:00-03:00`);
+    if (slotInstant.getTime() <= Date.now()) {
       slots.push({ start: fmtHHMM(start), available: false, reason: "passado" });
       continue;
     }
