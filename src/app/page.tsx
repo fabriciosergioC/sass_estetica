@@ -3,5 +3,5 @@ import { getSession } from "@/lib/auth/session";
 
 export default async function Home() {
   const session = await getSession();
-  redirect(session ? "/app" : "/login");
+  redirect(session ? "/app" : "/c/bela-face");
 }
