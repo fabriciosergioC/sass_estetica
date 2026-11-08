@@ -64,11 +64,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ slu
     const barber = await db.barber.findFirst({ where: { id: body.barberId, orgId: org.id, active: true } });
     if (!barber) return NextResponse.json({ error: "Barbeiro não encontrado." }, { status: 404, headers: corsHeaders });
 
-    const performs = await db.barberService.findFirst({
-      where: { barberId: barber.id, serviceId: service.id },
-    });
-    if (!performs) return NextResponse.json({ error: "Este atendente não executa este serviço." }, { status: 400, headers: corsHeaders });
-
+    // Mesma regra da disponibilidade pública: sem vínculo específico,
+    // assume que o atendente pode realizar o serviço.
     const startAt = localDateTime(body.date, body.time);
     if (startAt.getTime() < Date.now() - 60_000) {
       return NextResponse.json({ error: "Escolha um horário futuro." }, { status: 400, headers: corsHeaders });

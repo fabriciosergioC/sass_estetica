@@ -4,7 +4,7 @@ import { db } from "@/lib/db";
 import { jsonOk, handleApiError } from "@/lib/api";
 import { requirePermission } from "@/lib/auth/guards";
 
-const TIME = z.string().regex(/^\d{2}:\d{2}$/, "Hora inválida (HH:MM)");
+const TIME = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Hora inválida (HH:MM)");
 
 const hourSchema = z.object({
   weekday: z.coerce.number().int().min(0).max(6),
@@ -47,7 +47,9 @@ export async function GET(req: NextRequest) {
       );
     });
 
-    return jsonOk({ hours });
+    const response = jsonOk({ hours });
+    response.headers.set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+    return response;
   } catch (err) {
     return handleApiError(err);
   }
@@ -55,7 +57,10 @@ export async function GET(req: NextRequest) {
 
 const putSchema = z.object({
   barberId: z.string().optional(), // ausente = padrão da organização
-  hours: z.array(hourSchema).length(7),
+  hours: z
+    .array(hourSchema)
+    .length(7)
+    .refine((hours) => new Set(hours.map((h) => h.weekday)).size === 7, "Envie cada dia da semana exatamente uma vez."),
 });
 
 export async function PUT(req: NextRequest) {
@@ -75,6 +80,9 @@ export async function PUT(req: NextRequest) {
         if ((h.breakStart && !h.breakEnd) || (!h.breakStart && h.breakEnd)) {
           return jsonOk({ error: `Dia ${h.weekday}: intervalo precisa ter início e fim.` }, 400);
         }
+        if (h.breakStart && h.breakEnd && h.breakStart >= h.breakEnd) {
+          return jsonOk({ error: `Dia ${h.weekday}: início do intervalo deve ser antes do fim.` }, 400);
+        }
         if (h.breakStart && h.breakEnd && !(h.breakStart >= h.openTime && h.breakEnd <= h.closeTime)) {
           return jsonOk({ error: `Dia ${h.weekday}: intervalo fora do horário de funcionamento.` }, 400);
         }
@@ -82,8 +90,11 @@ export async function PUT(req: NextRequest) {
     }
 
     await db.$transaction(async (tx) => {
-      for (const h of body.hours) {
-        const data = {
+      // Recria os 7 dias dentro da transação: evita duplicatas quando barberId é
+      // NULL (o unique composto do PostgreSQL não cobre NULL como se espera).
+      await tx.businessHour.deleteMany({ where: { orgId, barberId: body.barberId ?? null } });
+      await tx.businessHour.createMany({
+        data: body.hours.map((h) => ({
           orgId,
           barberId: body.barberId ?? null,
           weekday: h.weekday,
@@ -92,23 +103,8 @@ export async function PUT(req: NextRequest) {
           closeTime: h.closeTime ?? "19:00",
           breakStart: h.breakStart ?? null,
           breakEnd: h.breakEnd ?? null,
-        };
-        const existingRow = await tx.businessHour.findFirst({
-          where: { orgId, barberId: body.barberId ?? null, weekday: h.weekday },
-        });
-        const payload = {
-          closed: data.closed,
-          openTime: data.openTime,
-          closeTime: data.closeTime,
-          breakStart: data.breakStart,
-          breakEnd: data.breakEnd,
-        };
-        if (existingRow) {
-          await tx.businessHour.update({ where: { id: existingRow.id }, data: payload });
-        } else {
-          await tx.businessHour.create({ data: { ...data, ...payload } });
-        }
-      }
+        })),
+      });
       await tx.auditLog.create({
         data: {
           orgId,
@@ -121,7 +117,9 @@ export async function PUT(req: NextRequest) {
       });
     });
 
-    return jsonOk({ ok: true });
+    const response = jsonOk({ ok: true, hours: body.hours });
+    response.headers.set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+    return response;
   } catch (err) {
     return handleApiError(err);
   }

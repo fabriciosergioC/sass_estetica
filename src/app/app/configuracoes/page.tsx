@@ -45,8 +45,8 @@ export default function ConfiguracoesPage() {
   const load = useCallback(async () => {
     setLoading(true);
     const [orgRes, hoursRes] = await Promise.all([
-      fetch("/api/organizations"),
-      fetch("/api/business-hours"),
+      fetch("/api/organizations", { cache: "no-store" }),
+      fetch("/api/business-hours", { cache: "no-store" }),
     ]);
     const orgData = await orgRes.json();
     const hoursData = await hoursRes.json();
@@ -92,18 +92,27 @@ export default function ConfiguracoesPage() {
 
   async function saveHours() {
     setSavingHours(true);
-    const res = await fetch("/api/business-hours", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ hours }),
-    });
-    setSavingHours(false);
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      toast(data.error ?? "Não foi possível salvar os horários.", "error");
-      return;
+    try {
+      const res = await fetch("/api/business-hours", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ hours }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast(data.error ?? "Não foi possível salvar os horários.", "error");
+        return;
+      }
+      // Confirma no próprio backend o que ficou salvo, em vez de confiar só no
+      // estado local da tela. Isso evidencia quando o painel e o link público
+      // estão apontando para ambientes diferentes.
+      const freshRes = await fetch("/api/business-hours", { cache: "no-store" });
+      const fresh = await freshRes.json().catch(() => null);
+      if (freshRes.ok && Array.isArray(fresh?.hours)) setHours(fresh.hours);
+      toast(`Horários salvos para ${org?.name ?? "clínica"}${org?.slug ? ` (/b/${org.slug})` : ""}.`);
+    } finally {
+      setSavingHours(false);
     }
-    toast("Horários de funcionamento salvos.");
   }
 
   function updateHour(weekday: number, patch: Partial<Hour>) {
@@ -294,6 +303,9 @@ export default function ConfiguracoesPage() {
 
       <Card className="p-5">
         <h2 className="font-medium">Horários de funcionamento (padrão)</h2>
+        <p className="mt-1 text-xs text-zinc-500">
+          Organização: {org.name} · página pública /b/{org.slug}. O agendamento online consulta estes horários.
+        </p>
         <div className="mt-4 space-y-2">
           {hours.map((h) => (
             <div

@@ -29,11 +29,8 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ slug
     const barber = await db.barber.findFirst({ where: { id: barberId, orgId: org.id, active: true } });
     if (!barber) return jsonOk({ error: "Barbeiro não encontrado." }, 404);
 
-    const performs = await db.barberService.findFirst({
-      where: { barberId: barber.id, serviceId: service.id },
-    });
-    // Se não houver vínculo específico, assume que o barbeiro pode realizar o serviço
-    // if (!performs) return jsonOk({ error: "Este barbeiro não executa este serviço." }, 400);
+    // Mesma regra da disponibilidade pública: sem vínculo específico,
+    // assume que o barbeiro pode realizar o serviço.
 
     const [y, m, d] = dateStr.split("-").map(Number);
     if (!y || !m || !d) return jsonOk({ error: "Data inválida." }, 400);
