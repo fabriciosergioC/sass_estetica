@@ -107,6 +107,7 @@ export function WhatsAppConnectionPanel({
   const [showBlocked, setShowBlocked] = useState(false);
   const [blocked, setBlocked] = useState<BlockedRow[] | null>(null);
   const [pauseBusy, setPauseBusy] = useState(false);
+  const [forceBusy, setForceBusy] = useState(false);
 
   const onConnectionRef = useRef(onConnection);
   onConnectionRef.current = onConnection;
@@ -369,6 +370,67 @@ export function WhatsAppConnectionPanel({
     }
   }
 
+  /**
+   * "Forçar envios parados": tenta agora o que está preso em QUEUED. Não antecipa lembrete
+   * agendado para o futuro — se o usuário quer isso, é no menu de Automações. Fura pausa e
+   * limite por hora (pedido explícito), mas não bloqueio/opt-out.
+   */
+  async function forceQueue() {
+    const parados = queue?.messages ?? 0;
+    const aviso = queue?.paused
+      ? `A fila está PAUSADA${queue.reason ? ` (${queue.reason})` : ""}. Forçar envia agora os itens parados, ignorando a pausa. Continuar?`
+      : `Forçar agora ${parados > 0 ? `${parados} mensagem(ns) parada(s)` : "os envios parados"}? Lembretes agendados para o futuro não serão antecipados.`;
+    if (!confirm(aviso)) return;
+
+    setForceBusy(true);
+    try {
+      const res = await fetch("/api/whatsapp/queue", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "force" }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast(data.error ?? "Não foi possível forçar os envios.", "error");
+        return;
+      }
+      const f = data.forced ?? {};
+      const sent = f.sent ?? 0;
+      const deferred = f.deferred ?? 0;
+      const failed = f.failed ?? 0;
+      const scheduled = f.skippedScheduled ?? 0;
+      const cancelled = f.cancelled ?? 0;
+      const running = f.skippedRunning ?? 0;
+
+      if ((f.scanned ?? 0) === 0) {
+        toast("Nada parado na fila agora.", "info");
+      } else if (sent > 0) {
+        toast(
+          `${sent} enviada(s)` +
+            (deferred ? ` · ${deferred} ainda esperando o WhatsApp reconectar` : "") +
+            (failed ? ` · ${failed} falha(s)` : "")
+        );
+      } else if (deferred > 0) {
+        toast("A mensagem continua na fila: o WhatsApp ainda está desconectado. Escaneie o QR e tente de novo.", "error");
+      } else if (failed > 0) {
+        toast(
+          `${failed} falha(s) no envio. Abra a conversa para ver o erro.`,
+          "error"
+        );
+      } else {
+        toast(
+          scheduled > 0 || running > 0
+            ? `Nada para forçar: ${running} em execução e ${scheduled} agendada(s) para depois${cancelled ? `, ${cancelled} cancelada(s)` : ""}.`
+            : "Nada para forçar agora.",
+          "info"
+        );
+      }
+      await load({ silent: true });
+    } finally {
+      setForceBusy(false);
+    }
+  }
+
   async function toggleLogs() {
     const next = !showLogs;
     setShowLogs(next);
@@ -623,6 +685,14 @@ export function WhatsAppConnectionPanel({
             title="Pausa os envios em fila (lembretes e automações). O atendimento manual no painel continua normal."
           >
             {queue?.paused ? "▶ Retomar envios da fila" : "⏸ Pausar envios da fila"}
+          </Button>
+          <Button
+            variant={(queue?.messages ?? 0) > 0 ? "outline" : "ghost"}
+            onClick={() => void forceQueue()}
+            disabled={forceBusy || loading}
+            title="Dispara agora o que está preso em 'Na fila': mensagens sem job, job vencido ou parado por pausa/queda. Não antecipa lembretes agendados para o futuro."
+          >
+            {forceBusy ? "Forçando..." : "⚡ Forçar envios parados"}
           </Button>
           <Button variant="ghost" onClick={() => void toggleLogs()}>
             {showLogs ? "Ocultar trilha de eventos" : "Ver trilha de eventos"}

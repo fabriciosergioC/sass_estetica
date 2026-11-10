@@ -105,17 +105,26 @@ export type GuardResult = { ok: boolean; code?: GuardCode; reason?: string };
 /**
  * Pente-fino antes de qualquer saída (§25): pausa ativa, limite por hora, número na lista
  * de bloqueio, opt-out do cliente e número não discável.
+ *
+ * `ignore` existe só para o botão "Forçar envios parados": ele é um pedido explícito do dono
+ * da clínica para furar pausa/limite. Bloqueio, opt-out e número inválido continuam valendo —
+ * forçar não é desculpa para falar com quem pediu para não receber.
  */
-export async function assertSendAllowed(opts: {
-  orgId: string;
-  phone: string | null;
-  customerId?: string | null;
-}): Promise<GuardResult> {
+export async function assertSendAllowed(
+  opts: {
+    orgId: string;
+    phone: string | null;
+    customerId?: string | null;
+  },
+  ignore: { pause?: boolean; rateLimit?: boolean } = {}
+): Promise<GuardResult> {
   const { orgId, phone } = opts;
 
-  const pause = await pauseInfo(orgId);
-  if (pause.paused) {
-    return { ok: false, code: "PAUSED", reason: `Envios pausados até ${pause.until}. ${pause.reason ?? ""}`.trim() };
+  if (!ignore.pause) {
+    const pause = await pauseInfo(orgId);
+    if (pause.paused) {
+      return { ok: false, code: "PAUSED", reason: `Envios pausados até ${pause.until}. ${pause.reason ?? ""}`.trim() };
+    }
   }
 
   if (phone) {
@@ -142,20 +151,22 @@ export async function assertSendAllowed(opts: {
   // Só conta o que REALMENTE saiu (PENDING/SENT/DELIVERED/READ). Contar QUEUED/CANCELLED
   // transformava um backlog aguardando reconexão em "limite por hora atingido", travando
   // a fila justamente quando ela precisava escoar.
-  const sentLastHour = await db.whatsAppMessage.count({
-    where: {
-      orgId,
-      direction: "OUT",
-      createdAt: { gte: since },
-      status: { in: ["PENDING", "SENT", "DELIVERED", "READ"] },
-    },
-  });
-  if (sentLastHour >= QUEUE_LIMITS.perHour) {
-    return {
-      ok: false,
-      code: "RATE_LIMIT",
-      reason: `Limite de ${QUEUE_LIMITS.perHour} mensagens por hora atingido. A fila retoma na próxima hora.`,
-    };
+  if (!ignore.rateLimit) {
+    const sentLastHour = await db.whatsAppMessage.count({
+      where: {
+        orgId,
+        direction: "OUT",
+        createdAt: { gte: since },
+        status: { in: ["PENDING", "SENT", "DELIVERED", "READ"] },
+      },
+    });
+    if (sentLastHour >= QUEUE_LIMITS.perHour) {
+      return {
+        ok: false,
+        code: "RATE_LIMIT",
+        reason: `Limite de ${QUEUE_LIMITS.perHour} mensagens por hora atingido. A fila retoma na próxima hora.`,
+      };
+    }
   }
 
   return { ok: true };
@@ -367,6 +378,178 @@ export async function reconcileQueuedSends(orgId?: string, opts: { olderThanMs?:
     await logWa({ orgId: id, level: "warn", event: "queue.reconciled", detail: `${count} mensagem(ns) presa(s) em QUEUED viraram erro visível` });
   }
   return { scanned: stale.length, marked };
+}
+
+export type ForceQueueResult = {
+  scanned: number;
+  sent: number;
+  deferred: number;
+  failed: number;
+  skippedScheduled: number;
+  skippedRunning: number;
+  cancelled: number;
+  errors: { messageId: string; error: string }[];
+};
+
+/** Pistas de que o job está parado esperando algo (pausa/queda), não agendado para depois. */
+const DEFERRED_HINT = /pausad|desconect|indispon|aguardando|reconect|offline/i;
+
+/**
+ * "Forçar envios parados": um clique explícito do painel para tirar da inércia o que está
+ * em QUEUED e não vai sair sozinho — mensagem sem job, job vencido ou job reprogramado por
+ * pausa/queda do WhatsApp.
+ *
+ * O que ele NÃO faz, de propósito:
+ * - não antecipa lembrete agendado para o futuro (job PENDING com `runAt` à frente): isso
+ *   não está parado, está esperando a hora;
+ * - não reinvade job que já está PROCESSING (o worker está com ele agora);
+ * - não envia para número bloqueado, cliente em opt-out, número inválido nem para
+ *   agendamento cancelado/remarcado. Pausa e limite por hora são furados porque o clique
+ *   é o dono da clínica pedindo: "manda agora".
+ */
+export async function forceDueQueuedSends(
+  orgId: string,
+  opts: { limit?: number; by?: string | null } = {}
+): Promise<ForceQueueResult> {
+  const limit = Math.min(Math.max(Math.trunc(opts.limit ?? 10), 1), 25);
+  const now = Date.now();
+  const result: ForceQueueResult = {
+    scanned: 0,
+    sent: 0,
+    deferred: 0,
+    failed: 0,
+    skippedScheduled: 0,
+    skippedRunning: 0,
+    cancelled: 0,
+    errors: [],
+  };
+
+  const messages = await db.whatsAppMessage.findMany({
+    where: { orgId, direction: "OUT", status: "QUEUED" },
+    orderBy: { createdAt: "asc" },
+    take: limit,
+    select: {
+      id: true,
+      phone: true,
+      body: true,
+      customerId: true,
+      conversationId: true,
+      templateKey: true,
+      appointmentId: true,
+      mediaUrl: true,
+      mediaMime: true,
+      messageType: true,
+      error: true,
+    },
+  });
+  result.scanned = messages.length;
+  if (!messages.length) return result;
+
+  // Um job por mensagem: o payload carrega o messageId. Comparação em memória — são poucos.
+  type JobRow = { id: string; status: string; runAt: Date; lastError: string | null; payload: string };
+  const jobs = await db.job.findMany({
+    where: { orgId, type: "send_whatsapp", status: { in: ["PENDING", "PROCESSING"] } },
+    select: { id: true, status: true, runAt: true, lastError: true, payload: true },
+  });
+  const jobByMessage = new Map<string, JobRow>();
+  for (const job of jobs as JobRow[]) {
+    try {
+      const parsed = JSON.parse(job.payload) as { messageId?: string };
+      if (parsed.messageId) jobByMessage.set(parsed.messageId, job);
+    } catch {
+      /* payload inválido: o worker trata */
+    }
+  }
+
+  const { sendMessage } = await import("./service");
+
+  for (const message of messages) {
+    const job = jobByMessage.get(message.id);
+
+    if (job?.status === "PROCESSING") {
+      result.skippedRunning++;
+      continue;
+    }
+
+    const deferredHint = DEFERRED_HINT.test(`${job?.lastError ?? ""} ${message.error ?? ""}`);
+    if (job && job.status === "PENDING" && job.runAt.getTime() > now + 30_000 && !deferredHint) {
+      result.skippedScheduled++;
+      continue;
+    }
+
+    // Mesma proteção do worker: agendamento cancelado/remarcado não recebe confirmação nem
+    // lembrete — só os avisos que EXISTEM para anunciar essa mudança.
+    const anunciaMudanca = message.templateKey === "cancellation" || message.templateKey === "reschedule";
+    if (message.appointmentId && !anunciaMudanca) {
+      const appt = await db.appointment.findFirst({
+        where: { id: message.appointmentId, orgId },
+        select: { status: true },
+      });
+      if (appt && ["CANCELLED", "RESCHEDULED"].includes(appt.status)) {
+        await db.whatsAppMessage.update({
+          where: { id: message.id },
+          data: { status: "CANCELLED", error: "Agendamento cancelado/remarcado antes do envio." },
+        });
+        result.cancelled++;
+        continue;
+      }
+    }
+
+    // Reivindica o job antes de enviar: sem isto o worker poderia pegar o mesmo PENDING e
+    // mandar a mensagem duas vezes enquanto este clique já está com ela.
+    if (job?.status === "PENDING") {
+      await db.job.update({
+        where: { id: job.id },
+        data: { status: "DONE", processedAt: new Date(), lastError: null },
+      });
+    }
+
+    const outcome = await sendMessage({
+      orgId,
+      messageId: message.id,
+      phone: message.phone,
+      body: message.body,
+      customerId: message.customerId,
+      conversationId: message.conversationId,
+      templateKey: message.templateKey ?? undefined,
+      media:
+        message.mediaUrl && ["image", "video", "audio", "document"].includes(message.messageType)
+          ? {
+              kind: message.messageType as "image" | "video" | "audio" | "document",
+              url: message.mediaUrl,
+              mimeType: message.mediaMime ?? undefined,
+            }
+          : undefined,
+      immediate: true,
+      force: true,
+    });
+
+    if (outcome.deferred) {
+      // Continua sem saída (WhatsApp ainda fora do ar): devolve à fila para tentar depois,
+      // em vez de deixar a mensagem sem nada que a execute.
+      result.deferred++;
+      await queueSendMessage({ orgId, messageId: message.id });
+      continue;
+    }
+
+    if (outcome.ok) {
+      result.sent++;
+    } else {
+      result.failed++;
+      result.errors.push({ messageId: message.id, error: outcome.error ?? "Falha no envio." });
+    }
+  }
+
+  await logWa({
+    orgId,
+    event: "queue.forced",
+    actor: opts.by ?? null,
+    detail:
+      `${result.sent} enviada(s), ${result.deferred} reprogramada(s), ${result.failed} falha(s), ` +
+      `${result.skippedScheduled} agendada(s) para depois, ${result.skippedRunning} em execução, ${result.cancelled} cancelada(s).`,
+  });
+  publish({ type: "dashboard.changed", orgId });
+  return result;
 }
 
 /** Bloqueia um número (opt-out manual, reclamação, spam). */

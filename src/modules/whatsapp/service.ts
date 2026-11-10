@@ -478,6 +478,12 @@ export type SendInput = {
   /** true = manda agora (chat interativo); false = passa pela fila (§26). */
   immediate?: boolean;
   /**
+   * Pedido explícito do painel ("Forçar envios parados"): fura pausa e limite por hora.
+   * Bloqueio, opt-out e número inválido continuam barrando — força não é atalho para
+   * falar com quem pediu para não receber.
+   */
+  force?: boolean;
+  /**
    * Linha já gravada a ser enviada (caminho da fila): em vez de criar histórico novo,
    * atualizamos esta mensagem. Sem isso cada job de `send_whatsapp` duplicaria a mensagem.
    */
@@ -558,7 +564,10 @@ export async function sendMessage(input: SendInput): Promise<SendOutcome> {
   }
 
   const customerId = input.customerId ?? existing?.customerId ?? storedContact?.customerId ?? null;
-  const guard = await assertSendAllowed({ orgId, phone: digits, customerId });
+  const guard = await assertSendAllowed(
+    { orgId, phone: digits, customerId },
+    input.force ? { pause: true, rateLimit: true } : undefined
+  );
   if (!guard.ok) {
     // Pausa e limite por hora são situações TEMPORÁRIAS. Marcar a mensagem como CANCELLED
     // aqui era o que fazia o lembrete sumir em vez de esperar a fila liberar. Só vale para

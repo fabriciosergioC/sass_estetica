@@ -2,7 +2,7 @@ import { NextRequest } from "next/server";
 import { z } from "zod";
 import { jsonOk, handleApiError } from "@/lib/api";
 import { requirePermission } from "@/lib/auth/guards";
-import { QUEUE_LIMITS, pauseInfo, queueDepth, resumeSending, pauseSending } from "@/modules/whatsapp/queue";
+import { QUEUE_LIMITS, pauseInfo, queueDepth, resumeSending, pauseSending, forceDueQueuedSends } from "@/modules/whatsapp/queue";
 import { db } from "@/lib/db";
 
 /**
@@ -31,9 +31,10 @@ export async function GET(_req: NextRequest) {
 }
 
 const postSchema = z.object({
-  action: z.enum(["pause", "resume"]),
+  action: z.enum(["pause", "resume", "force"]),
   reason: z.string().max(200).optional(),
   minutes: z.number().int().min(1).max(1440).optional(),
+  limit: z.number().int().min(1).max(25).optional(),
 });
 
 export async function POST(req: NextRequest) {
@@ -43,11 +44,38 @@ export async function POST(req: NextRequest) {
 
     if (body.action === "pause") {
       await pauseSending(orgId, body.reason ?? "Pausado manualmente pelo painel", body.minutes);
-    } else {
-      await resumeSending(orgId, session.userId);
+      return jsonOk({ ...(await queueDepth(orgId)), limits: QUEUE_LIMITS });
     }
 
-    return jsonOk({ ...(await queueDepth(orgId)), limits: QUEUE_LIMITS });
+    if (body.action === "resume") {
+      await resumeSending(orgId, session.userId);
+      return jsonOk({ ...(await queueDepth(orgId)), limits: QUEUE_LIMITS });
+    }
+
+    // "Forçar": tenta agora o que está preso em QUEUED (sem job, job vencido ou reprogramado
+    // por pausa/queda). Não antecipa lembrete agendado para o futuro — isso não está parado.
+    const result = await forceDueQueuedSends(orgId, { limit: body.limit, by: session.userId });
+    await db.auditLog
+      .create({
+        data: {
+          orgId,
+          userId: session.userId,
+          action: "whatsapp.queue.force",
+          entity: "whatsapp_message",
+          after: JSON.stringify({
+            scanned: result.scanned,
+            sent: result.sent,
+            deferred: result.deferred,
+            failed: result.failed,
+            skippedScheduled: result.skippedScheduled,
+            skippedRunning: result.skippedRunning,
+            cancelled: result.cancelled,
+          }),
+        },
+      })
+      .catch(() => {});
+
+    return jsonOk({ forced: result, ...(await queueDepth(orgId)), limits: QUEUE_LIMITS });
   } catch (err) {
     return handleApiError(err);
   }
