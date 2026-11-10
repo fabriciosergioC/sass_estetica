@@ -700,43 +700,79 @@ export async function ingestMessage(orgId: string, message: NormalizedMessage, t
   publish({ type: "conversation.changed", orgId, conversationId: conversation.id });
   publish({ type: "dashboard.changed", orgId });
 
-  // Se o cliente respondeu "SIM" a um lembrete pendente, confirma o agendamento
+  // Se o cliente respondeu "SIM" a um lembrete pendente, confirma a presença e manda
+  // a confirmação com data/hora (§ respostas do cliente).
   if (message.direction === "incoming" && message.text) {
     const trimmed = message.text.trim().toUpperCase();
     if (trimmed === "SIM" || trimmed === "SIM.") {
-      const pendingReminder = await db.whatsAppMessage.findFirst({
-        where: {
-          orgId,
-          customerId: linked,
-          templateKey: { in: ["reminder_24h", "reminder_2h"] },
-          status: { in: ["QUEUED", "SENT", "DELIVERED"] },
-        },
-        orderBy: { createdAt: "desc" },
-      });
+      // READ entra na lista: o cliente precisa abrir a conversa para digitar, e o recibo
+      // de leitura chega antes do "sim" — sem ele o lembrete some da busca e nada é enviado.
+      const reminderWhere = {
+        orgId,
+        templateKey: { in: ["reminder_24h", "reminder_2h"] },
+        status: { in: ["QUEUED", "SENT", "DELIVERED", "READ"] },
+      };
+      const pendingReminder =
+        (await db.whatsAppMessage.findFirst({
+          where: { ...reminderWhere, customerId: linked },
+          orderBy: { createdAt: "desc" },
+        })) ??
+        // Reserva: o vínculo contato→Customer pode faltar (telefone gravado em outro
+        // formato); a conversa em que o cliente respondeu identifica o lembrete do mesmo jeito.
+        (await db.whatsAppMessage.findFirst({
+          where: { ...reminderWhere, conversationId: conversation.id },
+          orderBy: { createdAt: "desc" },
+        }));
 
       if (pendingReminder?.appointmentId) {
         const appt = await db.appointment.findFirst({
           where: { id: pendingReminder.appointmentId, orgId },
           include: { customer: true, service: true, barber: true },
         });
-        if (appt && appt.customer.phone && appt.customer.whatsappOptIn !== false) {
-          const { formatDateTimeBR } = await import("./messages");
-          const { data, hora } = appt.startAt ? formatDateTimeBR(appt.startAt) : { data: "", hora: "" };
-          await sendTemplateMessage({
-            orgId,
-            templateKey: "confirmation",
-            vars: {
-              appointmentId: appt.id,
-              customerId: appt.customerId,
-              phone: appt.customer.phone,
-              customerName: appt.customer.name,
-              serviceName: appt.service.name,
-              barberName: appt.barber.name,
-              startAt: appt.startAt,
-            },
-            extra: { data, hora },
-            dedupeKey: `confirmation:sim:${appt.id}`,
-          });
+
+        if (appt) {
+          if (appt.status === "SCHEDULED") {
+            try {
+              const { changeStatus } = await import("@/modules/scheduling/appointments");
+              await changeStatus({
+                orgId,
+                appointmentId: appt.id,
+                to: "CONFIRMED",
+                reason: "Cliente respondeu SIM ao lembrete no WhatsApp.",
+              });
+            } catch (err) {
+              console.error("[ingest] Erro ao confirmar agendamento por SIM:", err);
+            }
+          }
+
+          // A resposta SIM é o pedido explícito da confirmação: quem agenda para outro dia
+          // recebe só o lembrete de 24h, então é aqui que chega o texto "Seu horário está
+          // confirmado…" com {{data}} e {{hora}}. `sendTemplateMessage` já limita a UMA
+          // confirmação por agendamento — quem recebeu no mesmo dia não recebe de novo.
+          if (
+            ["SCHEDULED", "CONFIRMED"].includes(appt.status) &&
+            appt.customer.phone &&
+            appt.customer.whatsappOptIn !== false
+          ) {
+            try {
+              await sendTemplateMessage({
+                orgId,
+                templateKey: "confirmation",
+                vars: {
+                  appointmentId: appt.id,
+                  customerId: appt.customerId,
+                  phone: appt.customer.phone,
+                  customerName: appt.customer.name,
+                  serviceName: appt.service.name,
+                  barberName: appt.barber.name,
+                  startAt: appt.startAt,
+                },
+                dedupeKey: `confirmation:sim:${appt.id}`,
+              });
+            } catch (err) {
+              console.error("[ingest] Erro ao enviar confirmação por SIM:", err);
+            }
+          }
         }
       }
     }

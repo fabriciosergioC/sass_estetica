@@ -402,6 +402,30 @@ export async function changeStatus(opts: {
     }
   }
 
+  // Cancelou: o que estava na fila para este horário não pode mais sair. Sem isto o cliente
+  // recebia o lembrete de 24h/2h de um horário que a clínica já tinha cancelado (o
+  // cancelamento em si é enviado logo abaixo).
+  if (["CANCELLED", "NO_SHOW"].includes(opts.to)) {
+    const cancelados = await db.whatsAppMessage.updateMany({
+      where: {
+        orgId: opts.orgId,
+        appointmentId: current.id,
+        status: "QUEUED",
+        templateKey: { in: ["reminder_24h", "reminder_2h", "confirmation"] },
+      },
+      data: {
+        status: "CANCELLED",
+        error:
+          opts.to === "NO_SHOW"
+            ? "Cliente marcado como falta: o lembrete não será mais enviado."
+            : "Agendamento cancelado: o lembrete não será mais enviado.",
+      },
+    });
+    if (cancelados.count > 0) {
+      console.log(`[changeStatus] ${cancelados.count} mensagem(ns) pendente(s) cancelada(s) — ${opts.to}`);
+    }
+  }
+
   // Disparo imediato do template de cancelamento para o WhatsApp do cliente cadastrado
   if (opts.to === "CANCELLED") {
     try {

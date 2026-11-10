@@ -1,6 +1,7 @@
 // Motor de eventos: publica eventos do domínio e executa as regras de automação
 // da organização. Ações são resolvidas aqui; efeitos demorados viram jobs.
 import { db } from "@/lib/db";
+import { isBusinessSameDay } from "@/lib/datetime";
 import { enqueueJob } from "./jobs";
 import { sendTemplateMessage, type TemplateKey } from "@/modules/whatsapp/messages";
 
@@ -161,6 +162,25 @@ export async function publishEvent(
         switch (rule.action) {
           case "send_whatsapp": {
             if (!config.template) throw new Error("Regra sem template configurado.");
+
+            // Política de mensagens da clínica (2026-11-08):
+            //  - horário HOJE  → só a confirmação (enviada na criação, em createAppointment);
+            //  - horário em OUTRO dia → só o lembrete de 24h (regra `schedule_reminder`).
+            // Regras antigas de `confirmation` em `appointment.created` mandavam a
+            // confirmação para qualquer data — era a mensagem duplicada junto do lembrete.
+            const startAt = vars.startAt as Date | undefined;
+            if (config.template === "confirmation" && startAt && !isBusinessSameDay(startAt)) {
+              await db.automationExecution.update({
+                where: { id: execution.id },
+                data: {
+                  status: "SKIPPED",
+                  error: "confirmation: horário em outro dia — para dias posteriores sai só o lembrete de 24h.",
+                },
+              });
+              console.log(`[events] ${event} → confirmation: pulado (horário não é hoje)`);
+              continue;
+            }
+
             await sendTemplateMessage({
               orgId,
               templateKey: config.template,

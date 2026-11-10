@@ -54,28 +54,63 @@ export async function adapterContext(orgId: string): Promise<AdapterContext> {
  * Estado consolidado da conexão (§2): adapter ao vivo + espelho do banco + QR, numa chamada.
  * É o que a tela de Configurações e o cabeçalho do painel de conversas usam.
  */
-async function retryRecentFailedConfirmations(orgId: string): Promise<number> {
-  const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+const RETRY_WINDOW_MS = 30 * 60 * 1000;
+const RETRYABLE_TEMPLATES = ["confirmation", "cancellation"] as const;
+
+/**
+ * Reenvia avisos que falharam por queda momentânea do WhatsApp (não por bloqueio, opt-out ou
+ * conteúdo). Sem isto, uma reconexão de 1 minuto deixava a confirmação/cancelamento como
+ * FAILED para sempre — o cliente não sabia que o horário mudou, e o atendente só descobria
+ * abrindo a conversa.
+ *
+ * Escopo estreito de propósito: só os dois avisos em que o cliente fica sem informação, só
+ * dentro de 30 min (aviso velho é pior que aviso nenhum) e só se o agendamento ainda
+ * justifica a mensagem.
+ */
+async function retryRecentFailedNotices(orgId: string): Promise<number> {
+  const since = new Date(Date.now() - RETRY_WINDOW_MS);
   const failed = await db.whatsAppMessage.findMany({
     where: {
       orgId,
       direction: "OUT",
-      templateKey: "confirmation",
+      templateKey: { in: [...RETRYABLE_TEMPLATES] },
       status: "FAILED",
       createdAt: { gte: since },
+      error: { contains: "desconectado" },
     },
-    select: { id: true },
+    select: { id: true, templateKey: true, appointmentId: true },
     take: 20,
   });
 
   let retried = 0;
   for (const message of failed) {
-    await db.whatsAppMessage.update({
-      where: { id: message.id },
+    if (message.appointmentId) {
+      const appt = await db.appointment.findFirst({
+        where: { id: message.appointmentId, orgId },
+        select: { status: true, startAt: true },
+      });
+      if (!appt) continue;
+      if (message.templateKey === "cancellation" && appt.status !== "CANCELLED") continue;
+      if (
+        message.templateKey === "confirmation" &&
+        (!["SCHEDULED", "CONFIRMED"].includes(appt.status) || appt.startAt.getTime() < Date.now())
+      ) {
+        continue;
+      }
+    }
+
+    // `updateMany` com status no filtro: os polls de métricas/eventos chamam isto em paralelo
+    // e sem a condição a mesma mensagem seria enfileirada três vezes.
+    const claimed = await db.whatsAppMessage.updateMany({
+      where: { id: message.id, status: "FAILED" },
       data: { status: "QUEUED", error: null },
     });
-    await queueSendMessage({ orgId, messageId: message.id, dedupeKey: `retry-confirmation:${message.id}` });
+    if (claimed.count === 0) continue;
+    await queueSendMessage({ orgId, messageId: message.id, dedupeKey: `retry-notice:${message.id}` });
     retried++;
+  }
+  if (retried > 0) {
+    await logWa({ orgId, event: "message.retry_after_reconnect", detail: `${retried} aviso(s) reenfileirado(s)` });
   }
   return retried;
 }
@@ -97,8 +132,8 @@ export async function getConnectionView(orgId: string): Promise<ConnectionView> 
   }
 
   if (live.state === "CONNECTED") {
-    void retryRecentFailedConfirmations(orgId).catch((err) => {
-      console.error("[WhatsApp] Falha ao reativar confirmações pendentes:", err);
+    void retryRecentFailedNotices(orgId).catch((err) => {
+      console.error("[WhatsApp] Falha ao reativar avisos pendentes:", err);
     });
   }
 

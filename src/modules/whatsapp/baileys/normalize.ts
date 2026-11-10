@@ -109,6 +109,15 @@ export function normalizeWebMessage(message: proto.IWebMessageInfo): NormalizedM
   const jid = message.key?.remoteJid;
   if (!jid || !message.key?.id) return null;
 
+  // Mensagens de protocolo (troca de chaves, edição, exclusão) não são conversa: viravam
+  // linhas "[Atualização]" enviadas por engano nos indicadores ("Enviadas hoje"/entrega).
+  // O WhatsApp reenvia várias delas ao sincronizar o histórico — por isso eram 12 de uma vez.
+  const rawContent = message.message as any;
+  const protocolContent = extractMessageContent(
+    rawContent?.deviceSentMessage?.message ? rawContent.deviceSentMessage.message : rawContent
+  ) as any;
+  if (protocolContent?.protocolMessage) return null;
+
   const altJid = (message.key as any)?.remoteJidAlt as string | undefined;
   // Preferimos o número real como identidade; o @lid fica guardado à parte no contato.
   const pnJid =
