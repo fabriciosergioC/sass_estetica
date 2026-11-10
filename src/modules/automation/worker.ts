@@ -5,7 +5,7 @@
 // ler os jobs, mas NUNCA enviar — cairia em "Baileys não conectado". Para produção em
 // serverless, use /api/cron com um agendador externo; aqui o objetivo é o app local
 // (iniciar.bat) processar lembretes sem ninguém abrir página nem clicar em botão.
-import { processJobs } from "./jobs";
+import { processJobs, requeueOrphanProcessing } from "./jobs";
 
 const GLOBAL_KEY = "__automation_worker__" as const;
 
@@ -39,6 +39,12 @@ async function tick() {
     //    reenviar sozinho seria mandar mensagem que ninguém pediu agora.
     if (!st.reconciled) {
       st.reconciled = true;
+      // Jobs que estavam em PROCESSING quando o processo caiu voltam para a fila. Isto
+      // PRECISA vir antes do pente de mensagens: senão o job órfão conta como "vivo" e a
+      // mensagem fica presa em QUEUED para sempre (visto a cada deploy na Railway).
+      const revived = await requeueOrphanProcessing();
+      if (revived > 0) console.log(`[Worker] ♻️ ${revived} job(s) órfão(s) em PROCESSING devolvido(s) à fila.`);
+
       const { reconcileQueuedSends } = await import("@/modules/whatsapp/queue");
       const { marked } = await reconcileQueuedSends();
       if (marked > 0) console.log(`[Worker] 🧹 ${marked} mensagem(es) presa(s) em QUEUED marcadas como erro.`);

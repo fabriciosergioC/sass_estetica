@@ -25,7 +25,7 @@ import {
 import QRCode from "qrcode";
 import { existsSync, readFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { db } from "@/lib/db";
 import { toWhatsAppDigits } from "@/lib/phone";
 import type { WhatsAppProvider, SendResult, ProviderStatus } from "../provider";
@@ -105,6 +105,8 @@ type BaileysGlobalState = {
    * grava em WhatsAppAccount.
    */
   account: { jid: string | null; lid: string | null; phone: string | null; name: string | null } | null;
+  /** Evita repetir o aviso de armazenamento efêmero a cada socket criado. */
+  storageWarningLogged?: boolean;
 };
 
 const GLOBAL_KEY = "__baileys_state__" as const;
@@ -152,8 +154,33 @@ function getGlobal(): BaileysGlobalState {
 
 // ─── Pasta de credenciais ──────────────────────────────────────────────────
 
+/**
+ * Raiz das credenciais. Em produção (Railway/Render/Fly), o filesystem do container é
+ * efêmero: a cada deploy a pasta some e o WhatsApp cai, exigindo escanear o QR de novo.
+ * `WHATSAPP_AUTH_DIR` aponta para um volume persistente (ex.: /data) e mantém o pareamento
+ * entre deploys. Sem a variável, mantemos o comportamento antigo (pasta do projeto).
+ */
+function authRootDir() {
+  const configured = process.env.WHATSAPP_AUTH_DIR?.trim();
+  return configured ? resolve(configured) : process.cwd();
+}
+
 function authDirFor(orgId: string) {
-  return join(process.cwd(), `baileys_auth_${orgId}`);
+  return join(authRootDir(), `baileys_auth_${orgId}`);
+}
+
+/** Avisa uma vez quando o processo claramente roda num host com disco efêmero. */
+function warnIfStorageIsEphemeral() {
+  const g = getGlobal();
+  if (g.storageWarningLogged) return;
+  g.storageWarningLogged = true;
+  if (process.env.RAILWAY_ENVIRONMENT && !process.env.WHATSAPP_AUTH_DIR?.trim()) {
+    console.warn(
+      "[Baileys] ⚠️ WHATSAPP_AUTH_DIR não configurado neste host. A sessão está sendo salva em " +
+        `${authDirFor("<org>")} e será PERDIDA a cada deploy/restart. Monte um volume persistente ` +
+        "e defina WHATSAPP_AUTH_DIR (ex.: /data) para manter o WhatsApp conectado sem novo QR."
+    );
+  }
 }
 
 /**
@@ -520,6 +547,8 @@ export async function restartWithFreshQr(orgId: string, source = "manual") {
 async function openSocket(orgId: string) {
   const g = getGlobal();
 
+  warnIfStorageIsEphemeral();
+
   setConnectionState({
     status: "PENDING_QR",
     detail: hasSavedSession(orgId)
@@ -527,8 +556,9 @@ async function openSocket(orgId: string) {
       : "Sessão nova: aguardando QR Code do WhatsApp...",
   });
 
-  console.log(`[Baileys] Carregando credenciais de ./baileys_auth_${orgId}/`);
-  const { state, saveCreds } = await useMultiFileAuthState(`./baileys_auth_${orgId}`);
+  const authDir = authDirFor(orgId);
+  console.log(`[Baileys] Carregando credenciais de ${authDir}`);
+  const { state, saveCreds } = await useMultiFileAuthState(authDir);
 
   const { version, isLatest } = await fetchLatestBaileysVersion();
   console.log(`[Baileys] Versão WA: ${version.join(".")}, Latest: ${isLatest}`);

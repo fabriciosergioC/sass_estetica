@@ -54,7 +54,29 @@ export async function enqueueJob(opts: {
   return { created: true };
 }
 
-async function handleSendWhatsapp(jobId: string, payload: JobPayload) {
+type JobRunResult = { deferred?: boolean; error?: string; retryAt?: Date } | void;
+
+/**
+ * Devolve à fila os jobs que ficaram em PROCESSING quando o processo caiu (deploy/restart
+ * no meio do envio). Sem isto eles ficam "vivos" para sempre: o pente de mensagens presas
+ * os considera em andamento e a mensagem nunca sai. Só é seguro com um worker por processo,
+ * que é a premissa do socket único do Baileys.
+ */
+export async function requeueOrphanProcessing(): Promise<number> {
+  const { count } = await db.job.updateMany({
+    where: { status: "PROCESSING" },
+    data: { status: "PENDING", runAt: new Date() },
+  });
+  return count;
+}
+
+/** Espera entre tentativas quando o WhatsApp está fora do ar / fila pausada. */
+function deferredRetryMs() {
+  const raw = Number(process.env.WHATSAPP_OFFLINE_RETRY_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : 120_000;
+}
+
+async function handleSendWhatsapp(jobId: string, payload: JobPayload): Promise<JobRunResult> {
   const message = await db.whatsAppMessage.findFirst({
     where: { id: payload.messageId, orgId: payload.orgId },
   });
@@ -86,15 +108,22 @@ async function handleSendWhatsapp(jobId: string, payload: JobPayload) {
   // tela passaram a discordar sobre a mesma mensagem.
   const { runQueuedSend } = await import("@/modules/whatsapp/queue");
   const outcome = await runQueuedSend(payload.orgId, message.id);
+
+  // Indisponibilidade (desconectado/pausado/limite): não é erro de envio. A mensagem fica
+  // QUEUED e o job volta depois, sem consumir tentativa — é o que faz a fila retomar sozinha
+  // depois de escanear o QR, em vez de morrer em DEAD e exigir reenvio manual.
+  if (outcome.deferred) {
+    return { deferred: true, error: outcome.error, retryAt: outcome.retryAt };
+  }
+
   if (!outcome.ok) throw new Error(outcome.error ?? "Falha no envio pela fila.");
 }
 
-async function runJob(job: { id: string; type: string; payload: string }) {
+async function runJob(job: { id: string; type: string; payload: string }): Promise<JobRunResult> {
   const payload = JSON.parse(job.payload) as JobPayload;
   switch (job.type as JobType) {
     case "send_whatsapp":
-      await handleSendWhatsapp(job.id, payload);
-      return;
+      return handleSendWhatsapp(job.id, payload);
     case "compute_metrics": {
       const { computeCustomerMetrics } = await import("@/modules/crm/metrics");
       if (payload.customerId) await computeCustomerMetrics(payload.orgId, payload.customerId);
@@ -137,7 +166,21 @@ export async function processJobs(limit = 25): Promise<number> {
     if (claimed.count === 0) continue;
 
     try {
-      await runJob(job);
+      const result = await runJob(job);
+
+      // Volta para a fila mais tarde SEM contar tentativa: é espera, não falha.
+      if (result?.deferred) {
+        await db.job.update({
+          where: { id: job.id },
+          data: {
+            status: "PENDING",
+            runAt: result.retryAt ?? new Date(Date.now() + deferredRetryMs()),
+            lastError: result.error ?? "WhatsApp indisponível; envio reprogramado.",
+          },
+        });
+        continue;
+      }
+
       await db.job.update({
         where: { id: job.id },
         data: { status: "DONE", processedAt: new Date(), attempts: job.attempts + 1 },

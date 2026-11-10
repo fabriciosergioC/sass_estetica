@@ -30,6 +30,11 @@ export const QUEUE_LIMITS = {
   pauseAfterFailures: envNumber("WHATSAPP_SEND_PAUSE_AFTER", 3),
   /** Duração da pausa automática. */
   pauseMinutes: envNumber("WHATSAPP_SEND_PAUSE_MINUTES", 15),
+  /**
+   * Tempo de espera quando o WhatsApp está desconectado ou a fila está pausada.
+   * Não é falha: a mensagem continua QUEUED e o job volta depois, sem consumir tentativa.
+   */
+  offlineRetryMs: envNumber("WHATSAPP_OFFLINE_RETRY_MS", 120_000),
 };
 
 type PauseInfo = { paused: boolean; until: string | null; reason: string | null };
@@ -93,7 +98,9 @@ export async function noteSendResult(orgId: string, ok: boolean, detail?: string
   return { paused: false };
 }
 
-export type GuardResult = { ok: boolean; reason?: string };
+export type GuardCode = "PAUSED" | "RATE_LIMIT" | "BLOCKED" | "OPT_OUT" | "INVALID_NUMBER";
+
+export type GuardResult = { ok: boolean; code?: GuardCode; reason?: string };
 
 /**
  * Pente-fino antes de qualquer saída (§25): pausa ativa, limite por hora, número na lista
@@ -107,16 +114,18 @@ export async function assertSendAllowed(opts: {
   const { orgId, phone } = opts;
 
   const pause = await pauseInfo(orgId);
-  if (pause.paused) return { ok: false, reason: `Envios pausados até ${pause.until}. ${pause.reason ?? ""}`.trim() };
+  if (pause.paused) {
+    return { ok: false, code: "PAUSED", reason: `Envios pausados até ${pause.until}. ${pause.reason ?? ""}`.trim() };
+  }
 
   if (phone) {
     if (phone.length < 10 || phone.length > 15) {
-      return { ok: false, reason: "Número fora do formato internacional (DDI + DDD + número)." };
+      return { ok: false, code: "INVALID_NUMBER", reason: "Número fora do formato internacional (DDI + DDD + número)." };
     }
     const blocked = await db.whatsAppBlockedNumber.findUnique({
       where: { orgId_phone: { orgId, phone } },
     });
-    if (blocked) return { ok: false, reason: "Este número está na lista de bloqueio desta clínica." };
+    if (blocked) return { ok: false, code: "BLOCKED", reason: "Este número está na lista de bloqueio desta clínica." };
   }
 
   if (opts.customerId) {
@@ -125,16 +134,28 @@ export async function assertSendAllowed(opts: {
       select: { whatsappOptIn: true, name: true },
     });
     if (customer && !customer.whatsappOptIn) {
-      return { ok: false, reason: `${customer.name} não aceita mensagens pelo WhatsApp (opt-out).` };
+      return { ok: false, code: "OPT_OUT", reason: `${customer.name} não aceita mensagens pelo WhatsApp (opt-out).` };
     }
   }
 
   const since = new Date(Date.now() - 60 * 60 * 1000);
+  // Só conta o que REALMENTE saiu (PENDING/SENT/DELIVERED/READ). Contar QUEUED/CANCELLED
+  // transformava um backlog aguardando reconexão em "limite por hora atingido", travando
+  // a fila justamente quando ela precisava escoar.
   const sentLastHour = await db.whatsAppMessage.count({
-    where: { orgId, direction: "OUT", createdAt: { gte: since }, status: { not: "FAILED" } },
+    where: {
+      orgId,
+      direction: "OUT",
+      createdAt: { gte: since },
+      status: { in: ["PENDING", "SENT", "DELIVERED", "READ"] },
+    },
   });
   if (sentLastHour >= QUEUE_LIMITS.perHour) {
-    return { ok: false, reason: `Limite de ${QUEUE_LIMITS.perHour} mensagens por hora atingido. A fila retoma na próxima hora.` };
+    return {
+      ok: false,
+      code: "RATE_LIMIT",
+      reason: `Limite de ${QUEUE_LIMITS.perHour} mensagens por hora atingido. A fila retoma na próxima hora.`,
+    };
   }
 
   return { ok: true };
@@ -190,10 +211,33 @@ export async function queueDepth(orgId: string) {
  * Usa import dinâmico do serviço para não criar ciclo serviço ⇄ fila: o serviço enfileira,
  * a fila executa via serviço.
  */
-export async function runQueuedSend(orgId: string, messageId: string): Promise<{ ok: boolean; status: string; error?: string }> {
+export type QueuedSendOutcome = {
+  ok: boolean;
+  status: string;
+  error?: string;
+  /** true = não foi enviada por indisponibilidade; o job deve voltar depois (sem gastar tentativa). */
+  deferred?: boolean;
+  /** Quando o job pode voltar; ausente = usar QUEUE_LIMITS.offlineRetryMs. */
+  retryAt?: Date;
+};
+
+export async function runQueuedSend(orgId: string, messageId: string): Promise<QueuedSendOutcome> {
   const message = await db.whatsAppMessage.findFirst({ where: { id: messageId, orgId } });
   if (!message) return { ok: false, status: "FAILED", error: "Mensagem não encontrada." };
   if (message.status !== "QUEUED") return { ok: true, status: message.status };
+
+  // Pausa manual/automática: nem chamamos o serviço. Antes, a guarda de pausa cancelava a
+  // mensagem (CANCELLED) e a fila perdia o lembrete de vez — agora ela só espera.
+  const pause = await pauseInfo(orgId);
+  if (pause.paused) {
+    return {
+      ok: false,
+      status: "QUEUED",
+      error: `Envios pausados até ${pause.until}. ${pause.reason ?? ""}`.trim(),
+      deferred: true,
+      retryAt: pause.until ? new Date(new Date(pause.until).getTime() + 5_000) : undefined,
+    };
+  }
 
   const { sendMessage } = await import("./service");
   // `messageId` é o que evita a duplicação: o serviço atualiza ESTA linha em vez de
@@ -216,6 +260,19 @@ export async function runQueuedSend(orgId: string, messageId: string): Promise<{
         : undefined,
     immediate: true,
   });
+
+  // Desconexão (ou limite por hora) não é falha de envio: a mensagem segue QUEUED, o job
+  // volta depois e o cliente não recebe o aviso como "não enviado" por algo temporário.
+  if (outcome.deferred) {
+    await logWa({
+      orgId,
+      level: "warn",
+      event: "message.deferred",
+      actor: message.phone,
+      detail: outcome.error ?? "WhatsApp indisponível; envio reprogramado.",
+    });
+    return { ok: false, status: "QUEUED", error: outcome.error, deferred: true };
+  }
 
   const { paused } = await noteSendResult(orgId, outcome.ok, outcome.error ?? null);
   if (paused) return { ok: false, status: "QUEUED", error: `${outcome.error ?? "falha"} (fila pausada)` };

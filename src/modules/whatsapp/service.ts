@@ -55,7 +55,24 @@ export async function adapterContext(orgId: string): Promise<AdapterContext> {
  * É o que a tela de Configurações e o cabeçalho do painel de conversas usam.
  */
 const RETRY_WINDOW_MS = 30 * 60 * 1000;
-const RETRYABLE_TEMPLATES = ["confirmation", "cancellation"] as const;
+const RETRYABLE_TEMPLATES = ["confirmation", "cancellation", "reschedule"] as const;
+
+/**
+ * Códigos que significam "o WhatsApp não está disponível AGORA" — não que a mensagem ou o
+ * número estejam errados. Nesses casos a fila espera e reprograma, em vez de marcar falha.
+ */
+const TRANSIENT_ADAPTER_CODES = new Set<WhatsAppAdapterError["code"]>([
+  "NOT_CONNECTED",
+  "SESSION_EXPIRED",
+  "API_OFFLINE",
+  "TIMEOUT",
+]);
+
+function isTransientWhatsAppError(err: unknown): boolean {
+  if (err instanceof WhatsAppAdapterError) return TRANSIENT_ADAPTER_CODES.has(err.code);
+  const text = err instanceof Error ? err.message : String(err);
+  return /não conectado|desconectado|não iniciado|socket/i.test(text);
+}
 
 /**
  * Reenvia avisos que falharam por queda momentânea do WhatsApp (não por bloqueio, opt-out ou
@@ -67,7 +84,7 @@ const RETRYABLE_TEMPLATES = ["confirmation", "cancellation"] as const;
  * dentro de 30 min (aviso velho é pior que aviso nenhum) e só se o agendamento ainda
  * justifica a mensagem.
  */
-async function retryRecentFailedNotices(orgId: string): Promise<number> {
+export async function retryRecentFailedNotices(orgId: string): Promise<number> {
   const since = new Date(Date.now() - RETRY_WINDOW_MS);
   const failed = await db.whatsAppMessage.findMany({
     where: {
@@ -92,7 +109,7 @@ async function retryRecentFailedNotices(orgId: string): Promise<number> {
       if (!appt) continue;
       if (message.templateKey === "cancellation" && appt.status !== "CANCELLED") continue;
       if (
-        message.templateKey === "confirmation" &&
+        (message.templateKey === "confirmation" || message.templateKey === "reschedule") &&
         (!["SCHEDULED", "CONFIRMED"].includes(appt.status) || appt.startAt.getTime() < Date.now())
       ) {
         continue;
@@ -300,6 +317,17 @@ export async function autoConnectWhatsApp(): Promise<{ orgId: string | null; sta
   for (const candidate of candidates) {
     const ctx = await adapterContext(candidate.orgId);
     const adapter = getAdapter("BARIELS");
+
+    // Já conectado nesta org: nada a retomar. Sem esta saída, o worker reingeria a conexão
+    // e reescrevia o estado a cada ciclo de 60s sem necessidade.
+    const current = await adapter.getStatus(ctx).catch(() => null);
+    if (current?.state === "CONNECTED") {
+      void retryRecentFailedNotices(candidate.orgId).catch((err) =>
+        console.error("[WhatsApp] Falha ao reativar avisos pendentes:", err)
+      );
+      return { orgId: candidate.orgId, state: "CONNECTED" };
+    }
+
     if (!(await adapter.hasStoredSession?.(ctx))) continue;
 
     try {
@@ -315,6 +343,10 @@ export async function autoConnectWhatsApp(): Promise<{ orgId: string | null; sta
           accountName: status.accountName ?? null,
         });
         console.log(`[WhatsApp] Sessão retomada para a org ${candidate.orgId}.`);
+        // Reconectou: os avisos que falharam enquanto o socket estava fora voltam para a fila.
+        void retryRecentFailedNotices(candidate.orgId).catch((err) =>
+          console.error("[WhatsApp] Falha ao reativar avisos pendentes:", err)
+        );
         return { orgId: candidate.orgId, state: "CONNECTED" };
       }
       // QR pendente = alguém precisa escanear. Insistir em outra org só expulsaria esta.
@@ -460,6 +492,11 @@ export type SendOutcome = {
   error?: string;
   friendly?: string;
   queued?: boolean;
+  /**
+   * true = não saiu por indisponibilidade temporária (WhatsApp desconectado, pausa ou
+   * limite por hora). A mensagem continua QUEUED e o job volta depois — não é falha.
+   */
+  deferred?: boolean;
 };
 
 /**
@@ -523,16 +560,26 @@ export async function sendMessage(input: SendInput): Promise<SendOutcome> {
   const customerId = input.customerId ?? existing?.customerId ?? storedContact?.customerId ?? null;
   const guard = await assertSendAllowed({ orgId, phone: digits, customerId });
   if (!guard.ok) {
+    // Pausa e limite por hora são situações TEMPORÁRIAS. Marcar a mensagem como CANCELLED
+    // aqui era o que fazia o lembrete sumir em vez de esperar a fila liberar. Só vale para
+    // linha já existente (fila): num envio novo não há o que esperar, então vira erro na hora.
+    const waitable = Boolean(existing) && (guard.code === "PAUSED" || guard.code === "RATE_LIMIT");
     if (existing) {
-      await db.whatsAppMessage.update({ where: { id: existing.id }, data: { status: "CANCELLED", error: redact(guard.reason) } });
+      await db.whatsAppMessage.update({
+        where: { id: existing.id },
+        data: waitable
+          ? { error: redact(guard.reason) }
+          : { status: "CANCELLED", error: redact(guard.reason) },
+      });
     }
     return {
       ok: false,
       messageId: existing?.id ?? "",
       conversationId: existing?.conversationId ?? null,
-      status: "FAILED",
+      status: waitable ? "QUEUED" : "FAILED",
       error: guard.reason ?? "bloqueado",
       friendly: guard.reason ?? undefined,
+      deferred: waitable,
     };
   }
 
@@ -599,9 +646,57 @@ export async function sendMessage(input: SendInput): Promise<SendOutcome> {
       : await adapter.sendText(ctx, target, body);
   } catch (err) {
     const friendly = err instanceof WhatsAppAdapterError ? err.friendly ?? FRIENDLY_ERROR[err.code] : FRIENDLY_ERROR.UNKNOWN;
+
+    // WhatsApp fora do ar/desconectado não é falha da mensagem: ela continua na fila e o
+    // job volta quando a sessão estiver de pé. Antes ia para FAILED e precisava de reenvio
+    // manual (ou do retry de 30 min) — era o "aguardando eterno" ao contrário. Envio avulso
+    // (sem linha existente na fila) continua FAILED, senão ficaria QUEUED sem job nenhum.
+    if (existing && isTransientWhatsAppError(err)) {
+      await db.whatsAppMessage.update({
+        where: { id: message.id },
+        data: { error: redact("Aguardando o WhatsApp reconectar — envio reprogramado automaticamente.") },
+      });
+      await logWa({
+        orgId,
+        level: "warn",
+        event: "message.deferred",
+        actor: digits ?? jid,
+        detail: friendly,
+      });
+      return {
+        ok: false,
+        messageId: message.id,
+        conversationId: message.conversationId,
+        status: "QUEUED",
+        error: String(err),
+        friendly,
+        deferred: true,
+      };
+    }
+
     await db.whatsAppMessage.update({ where: { id: message.id }, data: { status: "FAILED", error: redact(friendly) } });
     await logWa({ orgId, level: "error", event: "message.send_failed", actor: digits ?? jid, detail: friendly });
     return { ok: false, messageId: message.id, conversationId: message.conversationId, status: "FAILED", error: String(err), friendly };
+  }
+
+  // O adapter devolveu falha sem lançar (ex.: o socket sumiu entre o ensureReady e o envio).
+  // Mesma regra do catch: se é indisponibilidade e a linha veio da fila, ela fica QUEUED.
+  if (existing && !result.ok && isTransientWhatsAppError(result.error)) {
+    const friendly = redact(result.error ?? FRIENDLY_ERROR.NOT_CONNECTED) ?? FRIENDLY_ERROR.NOT_CONNECTED;
+    await db.whatsAppMessage.update({
+      where: { id: message.id },
+      data: { error: redact("Aguardando o WhatsApp reconectar — envio reprogramado automaticamente.") },
+    });
+    await logWa({ orgId, level: "warn", event: "message.deferred", actor: digits ?? jid, detail: friendly });
+    return {
+      ok: false,
+      messageId: message.id,
+      conversationId: message.conversationId,
+      status: "QUEUED",
+      error: result.error ?? friendly,
+      friendly,
+      deferred: true,
+    };
   }
 
   const status = result.status ?? (result.ok ? "pending" : "failed");
