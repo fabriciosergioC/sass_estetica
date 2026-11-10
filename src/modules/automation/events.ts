@@ -81,7 +81,7 @@ export function decisaoLembrete(
   if (startAt.getTime() <= agora.getTime()) {
     return { runAt: null, motivo: `o horário já passou (${Math.abs(faltam)} min atrás) — nada enviado` };
   }
-  if (startAt.toDateString() === agora.toDateString()) {
+  if (isBusinessSameDay(startAt, agora)) {
     return {
       runAt: null,
       motivo: `o horário é hoje (faltam ${faltam} min): um lembrete de ${cfg.hoursBefore} h não tem como existir — nada enviado`,

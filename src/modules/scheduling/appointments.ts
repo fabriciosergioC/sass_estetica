@@ -2,6 +2,7 @@ import { db } from "@/lib/db";
 import { assertSlotFree } from "./availability";
 import { isBusinessSameDay } from "@/lib/datetime";
 import { publishEvent } from "@/modules/automation/events";
+import { ruleTemplate } from "@/modules/automation/rules";
 import { enqueueJob } from "@/modules/automation/jobs";
 import { sendTemplateMessage, formatDateTimeBR, type AppointmentVars } from "@/modules/whatsapp/messages";
 import { publishAppointmentEvent } from "./appointments-bus";
@@ -125,25 +126,37 @@ export async function createAppointment(opts: {
   // Sincroniza o status da conversa do WhatsApp para "Aberta" (OPEN)
   await syncWhatsAppConversationStatus(opts.orgId, appointment.id, appointment.status as AppointmentStatus);
 
-  // Mesmo dia: confirmação imediata. Dias posteriores: somente o lembrete 24h,
-  // agendado pela regra reminder_24h para 24 horas antes do horário.
+  // O par fixo do menu ("Mensagem de agendamento") já decidiu o envio acima, em publishEvent:
+  // mesmo dia → confirmação; próximo dia ou mais → lembrete de 24h. O envio direto abaixo é só
+  // para clínicas antigas, que ainda não têm a regra provisionada — e, mesmo nesse caso, ele
+  // respeita o interruptor: se a regra existe e está desligada, o cliente não recebe nada.
   if (isBusinessSameDay(appointment.startAt)) {
-    try {
-      await sendTemplateMessage({
-        orgId: opts.orgId,
-        templateKey: "confirmation",
-        vars: {
-          appointmentId: appointment.id,
-          customerId: customer.id,
-          phone: customer.phone,
-          customerName: customer.name,
-          serviceName: service.name,
-          barberName: barber.name,
-          startAt: appointment.startAt,
-        },
-      });
-    } catch (err) {
-      console.error("[createAppointment] Erro ao enviar confirmação do mesmo dia:", err);
+    const creationRules = await db.automationRule.findMany({
+      where: { orgId: opts.orgId, event: "appointment.created" },
+      select: { action: true, config: true },
+    });
+    const hasConfirmationRule = creationRules.some(
+      (rule) => rule.action === "send_whatsapp" && ruleTemplate(rule.config) === "confirmation"
+    );
+
+    if (!hasConfirmationRule) {
+      try {
+        await sendTemplateMessage({
+          orgId: opts.orgId,
+          templateKey: "confirmation",
+          vars: {
+            appointmentId: appointment.id,
+            customerId: customer.id,
+            phone: customer.phone,
+            customerName: customer.name,
+            serviceName: service.name,
+            barberName: barber.name,
+            startAt: appointment.startAt,
+          },
+        });
+      } catch (err) {
+        console.error("[createAppointment] Erro ao enviar confirmação do mesmo dia:", err);
+      }
     }
   }
 

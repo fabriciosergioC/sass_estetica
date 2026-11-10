@@ -86,6 +86,10 @@ export const DEFAULT_TEMPLATES: Array<{ key: string; name: string; body: string 
  * e o cliente que agenda pelo link nunca aperta.
  */
 export const DEFAULT_RULES: Array<{ event: string; action: string; config: Record<string, unknown> }> = [
+  // Par fixo do menu (um interruptor só, ver src/modules/automation/rules.ts):
+  //   mesmo dia → confirmação; próximo dia ou mais → lembrete de 24h.
+  // As duas precisam existir juntas para o interruptor conseguir ligá-las/desligá-las.
+  { event: "appointment.created", action: "send_whatsapp", config: { template: "confirmation" } },
   { event: "appointment.created", action: "schedule_reminder", config: { template: "reminder_24h", hoursBefore: 24 } },
   { event: "appointment.cancelled", action: "send_whatsapp", config: { template: "cancellation" } },
   { event: "appointment.rescheduled", action: "send_whatsapp", config: { template: "reschedule" } },

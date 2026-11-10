@@ -5,6 +5,7 @@ import { Button, Card, EmptyState, Badge, Textarea, Field, Input, Select } from 
 import { Dialog } from "@/components/dialog";
 import { toast } from "@/components/toast";
 import { formatPhone } from "@/lib/format";
+import { isFixedNoticeRule, isLegacyConfirmedReminder } from "@/modules/automation/rules";
 
 type Rule = {
   id: string;
@@ -90,6 +91,41 @@ export default function AutomacoesPage() {
     load();
   }
 
+  // A tela trata confirmação (mesmo dia) + lembrete de 24h (próximo dia ou depois) como UM
+  // interruptor. As duas regras continuam separadas no banco — é assim que o motor escolhe a
+  // mensagem pelo dia do horário — e o servidor liga/desliga as duas juntas.
+  const noticeRules = rules.filter(isFixedNoticeRule);
+  const noticeEnabled = noticeRules.length > 0 && noticeRules.every((rule) => rule.enabled);
+  // Estado parcial (uma ligada, outra não) só existe em clínica antiga; mostramos como
+  // "Parcial" em vez de fingir que está tudo desligado — e ligar o interruptor padroniza as duas.
+  const noticePartial =
+    noticeRules.length === 2 && noticeRules.some((rule) => rule.enabled) && !noticeEnabled;
+  // O lembrete legado em "Agendamento confirmado" fica fora da lista: ele é desligado pelo
+  // servidor ao carregar a tela, e mostrar um interruptor que não pode ser ligado só confunde.
+  const otherRules = rules.filter(
+    (rule) => !isFixedNoticeRule(rule) && !isLegacyConfirmedReminder(rule)
+  );
+
+  async function toggleNotice() {
+    if (noticeRules.length === 0) return;
+    const next = !noticeEnabled;
+    const responses = await Promise.all(
+      noticeRules.map((rule) =>
+        fetch("/api/automations", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: rule.id, enabled: next }),
+        })
+      )
+    );
+    if (responses.some((res) => !res.ok)) {
+      toast("Não foi possível atualizar a mensagem de agendamento.", "error");
+      return;
+    }
+    toast(next ? "Mensagem de agendamento ativada." : "Mensagem de agendamento desativada.");
+    load();
+  }
+
   function startEdit(t: Template) {
     setEditing(t);
     setDraft(t.body);
@@ -137,15 +173,68 @@ export default function AutomacoesPage() {
               <h2 className="font-medium">Regras</h2>
               <p className="text-xs text-zinc-500">Ative, desative ou faça envio manual de cada automação.</p>
             </div>
+
+            {/* Lógica fixa da mensagem de agendamento: um interruptor para as duas regras. */}
+            <div className="border-b border-zinc-800 bg-gold-500/[0.06] px-5 py-4">
+              <div className="flex flex-wrap items-start justify-between gap-4">
+                <div className="min-w-0">
+                  <p className="text-sm font-medium text-zinc-100">
+                    Mensagem de agendamento
+                    <span className="ml-2 text-xs font-normal text-gold-400">lógica fixa</span>
+                  </p>
+                  <p className="mt-1 text-xs leading-relaxed text-zinc-400">
+                    <span className="text-zinc-300">Mesmo dia</span> → Enviar WhatsApp (Confirmação de agendamento).
+                    <br />
+                    <span className="text-zinc-300">Próximo dia ou depois</span> → Agendar lembrete (Lembrete 24h antes) · 24h antes.
+                  </p>
+                  {noticeRules.length < 2 && (
+                    <p className="mt-1 text-xs text-amber-400">
+                      Regra incompleta — recarregue a tela para recriar as duas mensagens padrão.
+                    </p>
+                  )}
+                  {noticePartial && (
+                    <p className="mt-1 text-xs text-amber-400">
+                      As duas regras estão em estados diferentes. Ligue o interruptor para padronizar.
+                    </p>
+                  )}
+                </div>
+                <div className="flex items-center gap-3">
+                  <span
+                    className={`text-xs ${
+                      noticeEnabled ? "text-gold-400" : noticePartial ? "text-amber-400" : "text-zinc-500"
+                    }`}
+                  >
+                    {noticeEnabled ? "Ativa" : noticePartial ? "Parcial" : "Desativada"}
+                  </span>
+                  <button
+                    onClick={toggleNotice}
+                    disabled={noticeRules.length === 0}
+                    className={`relative h-6 w-11 shrink-0 rounded-full transition-colors disabled:opacity-40 ${
+                      noticeEnabled ? "bg-gold-500" : "bg-zinc-700"
+                    }`}
+                    aria-label={noticeEnabled ? "Desativar mensagem de agendamento" : "Ativar mensagem de agendamento"}
+                  >
+                    <span
+                      className={`absolute top-0.5 h-5 w-5 rounded-full bg-zinc-950 transition-all ${
+                        noticeEnabled ? "left-[22px]" : "left-0.5"
+                      }`}
+                    />
+                  </button>
+                </div>
+              </div>
+            </div>
+
             {rules.length === 0 ? (
               <EmptyState
                 icon="⚡"
                 title="Nenhuma regra configurada"
                 description="Novas clínicas recebem regras padrão de confirmação e lembrete."
               />
+            ) : otherRules.length === 0 ? (
+              <p className="px-5 py-5 text-sm text-zinc-500">Nenhuma outra regra configurada.</p>
             ) : (
               <ul className="divide-y divide-zinc-800/60">
-                {rules.map((rule) => (
+                {otherRules.map((rule) => (
                   <li key={rule.id} className="flex flex-wrap items-center justify-between gap-4 px-5 py-3">
                     <div className="min-w-0">
                       <p className="text-sm font-medium text-zinc-200">
