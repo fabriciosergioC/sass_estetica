@@ -7,6 +7,8 @@ import { toast } from "@/components/toast";
 import { formatBRL, formatDateShort, formatTimeHHMM, STATUS_META, toDateInput } from "@/lib/format";
 import { AppointmentDialog } from "./appointment-dialog";
 import { RescheduleDialog, type RescheduleTarget } from "./reschedule-dialog";
+import { PaymentDialog, type PaymentTarget } from "./payment-dialog";
+import { paymentMethodLabel } from "@/lib/payment-methods";
 
 type Appointment = {
   id: string;
@@ -18,6 +20,7 @@ type Appointment = {
   customer: { id: string; name: string; phone: string };
   barber: { id: string; name: string };
   service: { id: string; name: string; durationMin: number };
+  payments: { id: string; method: string; amountCents: number; paidAt: string | null }[];
 };
 
 type BarberOption = { id: string; name: string };
@@ -59,6 +62,7 @@ export default function AgendaPage() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [preselectCustomerId, setPreselectCustomerId] = useState<string | undefined>();
   const [rescheduleTarget, setRescheduleTarget] = useState<RescheduleTarget | null>(null);
+  const [paymentTarget, setPaymentTarget] = useState<PaymentTarget | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
 
   // Estados de Tempo Real e Destaque Visual
@@ -211,7 +215,7 @@ export default function AgendaPage() {
         } else if (data.whatsapp?.friendly) {
           toast(`Atendimento concluído. WhatsApp: ${data.whatsapp.friendly}`);
         } else {
-          toast("Atendimento concluído. Pagamento registrado.");
+          toast("Atendimento concluído. Registre o recebimento no atendimento.");
         }
       } else {
         const labels: Record<string, string> = {
@@ -239,7 +243,9 @@ export default function AgendaPage() {
   const stats = useMemo(() => {
     const active = appointments.filter((a) => ["SCHEDULED", "CONFIRMED", "IN_SERVICE"].includes(a.status));
     const done = appointments.filter((a) => a.status === "COMPLETED");
-    const revenue = done.reduce((sum, a) => sum + a.priceCents, 0);
+    // "Recebido" é o que entrou de verdade (Payment), não o preço do serviço: atendimento
+    // concluído sem recebimento registrado não é dinheiro no caixa.
+    const revenue = done.reduce((sum, a) => sum + (a.payments?.[0]?.amountCents ?? 0), 0);
     return { total: appointments.length, active: active.length, done: done.length, revenue };
   }, [appointments]);
 
@@ -344,7 +350,7 @@ export default function AgendaPage() {
           <p className="text-xl font-semibold tabular-nums">{stats.done}</p>
         </Card>
         <Card className="p-3">
-          <p className="text-xs text-zinc-500">Faturado hoje</p>
+          <p className="text-xs text-zinc-500">Recebido hoje</p>
           <p className="text-xl font-semibold tabular-nums text-gold-400">{formatBRL(stats.revenue)}</p>
         </Card>
       </div>
@@ -439,6 +445,47 @@ export default function AgendaPage() {
                     )}
                   </div>
                 )}
+                {a.status === "COMPLETED" &&
+                  (() => {
+                    const payment = a.payments?.[0] ?? null;
+                    return (
+                      <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-zinc-800 pt-3">
+                        <div className="flex flex-wrap items-center gap-2">
+                          {payment ? (
+                            <>
+                              <Badge tone="green">Recebido · {paymentMethodLabel(payment.method)}</Badge>
+                              <span className="text-xs text-zinc-500">{formatBRL(payment.amountCents)}</span>
+                            </>
+                          ) : (
+                            <Badge tone="amber">Recebimento pendente</Badge>
+                          )}
+                        </div>
+                        <Button
+                          variant={payment ? "outline" : "action"}
+                          disabled={busyId === a.id}
+                          onClick={() =>
+                            setPaymentTarget({
+                              id: a.id,
+                              customerName: a.customer.name,
+                              serviceName: a.service.name,
+                              priceCents: a.priceCents,
+                              payment: payment
+                                ? {
+                                    id: payment.id,
+                                    method: payment.method,
+                                    amountCents: payment.amountCents,
+                                    paidAt: payment.paidAt,
+                                  }
+                                : null,
+                            })
+                          }
+                          className="!px-3 !py-1.5 !text-xs"
+                        >
+                          {payment ? "Alterar recebimento" : "Registrar recebimento"}
+                        </Button>
+                      </div>
+                    );
+                  })()}
               </Card>
             );
           })}
@@ -459,6 +506,11 @@ export default function AgendaPage() {
         target={rescheduleTarget}
         onClose={() => setRescheduleTarget(null)}
         onDone={() => load({ silent: true })}
+      />
+      <PaymentDialog
+        target={paymentTarget}
+        onClose={() => setPaymentTarget(null)}
+        onDone={() => void load({ silent: true })}
       />
     </div>
   );

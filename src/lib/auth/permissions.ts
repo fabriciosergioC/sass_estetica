@@ -16,6 +16,7 @@ export const PERMISSIONS = {
   "dashboard:view": ["ADMIN", "MANAGER", "RECEPTIONIST"],
   "opportunities:view": ["ADMIN", "MANAGER"],
   "automations:manage": ["ADMIN", "MANAGER"],
+  "payments:manage": ["ADMIN", "MANAGER", "RECEPTIONIST"],
   "whatsapp:manage": ["ADMIN"],
   "reports:view": ["ADMIN", "MANAGER"],
 } as const;

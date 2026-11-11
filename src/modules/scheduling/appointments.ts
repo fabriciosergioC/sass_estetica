@@ -117,6 +117,16 @@ export async function createAppointment(opts: {
     return appt;
   });
 
+  // O cliente que estava sem próximo horário ganhou um: a oportunidade "Sem agendamento
+  // futuro" deixa de valer na hora, sem esperar o próximo ciclo de detecção. Falha aqui não
+  // pode derrubar o agendamento — é efeito colateral de leitura, não parte da transação.
+  await db.opportunity
+    .updateMany({
+      where: { orgId: opts.orgId, type: "NO_UPCOMING", status: "OPEN", refId: opts.customerId },
+      data: { status: "ACTION_TAKEN", resolvedAt: new Date() },
+    })
+    .catch(() => {});
+
   await publishEvent(opts.orgId, "appointment.created", {
     appointmentId: appointment.id,
     customerId: opts.customerId,
@@ -288,22 +298,9 @@ export async function changeStatus(opts: {
       data: { status: opts.to },
     });
 
-    if (opts.to === "COMPLETED") {
-      const existingPayment = await tx.payment.findFirst({
-        where: { appointmentId: current.id, status: "PAID" },
-      });
-      if (!existingPayment) {
-        await tx.payment.create({
-          data: {
-            orgId: opts.orgId,
-            appointmentId: current.id,
-            amountCents: current.priceCents,
-            status: "PAID",
-            paidAt: new Date(),
-          },
-        });
-      }
-    }
+    // Concluir NÃO registra recebimento sozinho. O caixa é decidido na Agenda, pelo botão
+    // de status do recebimento do atendimento concluído — assim a forma (Dinheiro/PIX/Cartão)
+    // é escolhida por quem recebeu, e não cair tudo como Dinheiro por padrão.
 
     await tx.appointmentStatusHistory.create({
       data: {

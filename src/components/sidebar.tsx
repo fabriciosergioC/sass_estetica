@@ -26,6 +26,7 @@ const NAV: NavItem[] = [
   // basta desarquivar esta linha para o item voltar ao menu.
   // { href: "/app/oportunidades", label: "Oportunidades", icon: "🎯", roles: ["ADMIN", "MANAGER"] },
   { href: "/app/automacoes", label: "Automações", icon: "⚡", roles: ["ADMIN", "MANAGER"] },
+  { href: "/app/recebimentos", label: "Recebimentos", icon: "💰", roles: ["ADMIN", "MANAGER", "RECEPTIONIST"] },
   { href: "/app/relatorios", label: "Relatórios", icon: "📈", roles: ["ADMIN", "MANAGER"] },
   { href: "/app/whatsapp", label: "WhatsApp", icon: "💬", roles: ["ADMIN"] },
   { href: "/app/configuracoes", label: "Configurações", icon: "⚙️", roles: ["ADMIN"] },

@@ -44,6 +44,14 @@ export async function GET(req: NextRequest) {
         customer: { select: { id: true, name: true, phone: true } },
         barber: { select: { id: true, name: true } },
         service: { select: { id: true, name: true, durationMin: true } },
+        // A Agenda mostra o status do recebimento de cada atendimento concluído. Traz o
+        // pagamento mais recente (o normal é existir no máximo um PAID por agendamento).
+        payments: {
+          where: { status: "PAID" },
+          orderBy: { paidAt: "desc" },
+          take: 1,
+          select: { id: true, method: true, amountCents: true, paidAt: true },
+        },
       },
     });
 

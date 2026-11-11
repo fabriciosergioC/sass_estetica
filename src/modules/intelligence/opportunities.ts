@@ -76,6 +76,97 @@ async function detectReturnOpportunities(orgId: string) {
   }
 }
 
+/**
+ * Clientes sem nenhum agendamento futuro.
+ *
+ * "Futuro" é a mesma régua que a Agenda usa: `startAt` a partir de agora com status
+ * SCHEDULED ou CONFIRMED. Cancelado/remarcado não conta — o cliente continua sem próximo
+ * horário e precisa ser chamado.
+ *
+ * Antes de criar, resolve o que deixou de valer: quem estava sem horário e passou a ter um
+ * (agendou pela Agenda, pelo portal ou pelo link público) sai da lista na hora em que a
+ * detecção roda. Sem isso a oportunidade ficava aberta para sempre e o filtro mentia.
+ */
+async function detectNoUpcoming(orgId: string) {
+  const now = new Date();
+
+  const openOnes = await db.opportunity.findMany({
+    where: { orgId, type: "NO_UPCOMING", status: "OPEN", refId: { not: null } },
+    select: { id: true, refId: true },
+    take: 500,
+  });
+  if (openOnes.length > 0) {
+    const withUpcoming = await db.appointment.findMany({
+      where: {
+        orgId,
+        customerId: { in: openOnes.map((op) => op.refId!).filter(Boolean) },
+        startAt: { gte: now },
+        status: { in: ["SCHEDULED", "CONFIRMED"] },
+      },
+      select: { customerId: true },
+      distinct: ["customerId"],
+    });
+    const resolvedIds = new Set(withUpcoming.map((appointment) => appointment.customerId));
+    const staleIds = openOnes
+      .filter((op) => op.refId && resolvedIds.has(op.refId))
+      .map((op) => op.id);
+    if (staleIds.length > 0) {
+      await db.opportunity.updateMany({
+        where: { id: { in: staleIds } },
+        data: { status: "ACTION_TAKEN", resolvedAt: new Date() },
+      });
+    }
+  }
+
+  const customers = await db.customer.findMany({
+    where: {
+      orgId,
+      appointments: {
+        none: {
+          startAt: { gte: now },
+          status: { in: ["SCHEDULED", "CONFIRMED"] },
+        },
+      },
+    },
+    select: {
+      id: true,
+      name: true,
+      createdAt: true,
+      metrics: { select: { visits: true, lastVisitAt: true } },
+      appointments: {
+        where: { status: "COMPLETED" },
+        orderBy: { startAt: "desc" },
+        take: 1,
+        select: { startAt: true },
+      },
+      _count: { select: { appointments: { where: { status: "COMPLETED" } } } },
+    },
+    orderBy: { createdAt: "desc" },
+    take: 200,
+  });
+
+  for (const customer of customers) {
+    const visits = Math.max(customer.metrics?.visits ?? 0, customer._count.appointments);
+    const lastVisitAt = customer.appointments[0]?.startAt ?? customer.metrics?.lastVisitAt ?? null;
+    const returning = visits > 0;
+
+    await upsertOpen(orgId, {
+      type: "NO_UPCOMING",
+      priority: returning ? "HIGH" : "MEDIUM",
+      title: `${customer.name} está sem próximo agendamento`,
+      problem: returning
+        ? `${customer.name} já foi atendido ${visits} ${visits === 1 ? "vez" : "vezes"} e não tem próximo horário marcado.`
+        : `${customer.name} está cadastrado, mas não tem nenhum agendamento futuro.`,
+      evidence: returning && lastVisitAt
+        ? `${visits} atendimento(s) concluído(s); última visita em ${lastVisitAt.toLocaleDateString("pt-BR")}; nenhum agendamento futuro.`
+        : `Cadastro criado em ${customer.createdAt.toLocaleDateString("pt-BR")}; nenhum agendamento futuro.`,
+      suggestedAction: "Chamar no WhatsApp para marcar o próximo horário.",
+      actionPayload: { customerId: customer.id, template: "return_due" },
+      refId: customer.id,
+    });
+  }
+}
+
 /** Próximos agendamentos com alto risco de falta. */
 async function detectRiskAppointments(orgId: string) {
   const from = new Date();
@@ -174,6 +265,7 @@ export async function detectOpportunities(orgId: string): Promise<number> {
   const before = await db.opportunity.count({ where: { orgId, status: "OPEN" } });
   await Promise.all([
     detectReturnOpportunities(orgId),
+    detectNoUpcoming(orgId),
     detectRiskAppointments(orgId),
     detectIdleSlots(orgId),
     expireStale(orgId),
