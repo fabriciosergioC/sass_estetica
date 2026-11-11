@@ -507,6 +507,10 @@ function ManualDispatchDialog({
         <p className="text-sm text-zinc-400">
           Envie imediatamente uma mensagem de automação para um cliente específico pelo WhatsApp.
         </p>
+        <p className="text-xs text-zinc-500">
+          Confirmação, cancelamento, lembretes e pós-atendimento saem uma única vez por atendimento:
+          repetir o disparo não duplica a mensagem.
+        </p>
 
         {/* 1. Seleção do Template */}
         <Field label="Opção de automação (template)">

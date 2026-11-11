@@ -58,3 +58,27 @@ export function isLegacyConfirmedReminder(rule: {
     ruleTemplate(rule.config) === "reminder_24h"
   );
 }
+
+/**
+ * Avisos do ciclo do atendimento: confirmação, cancelamento, lembretes e pós-atendimento.
+ *
+ * Eles saem no máximo UMA vez por atendimento (e, quando o cliente não tem atendimento
+ * vinculado, uma vez por cliente). O envio automático já respeita isso dentro de
+ * `sendTemplateMessage`; esta lista faz o disparo manual da tela de Automações obedecer à
+ * mesma regra — antes, cada clique em "Disparar" criava outra mensagem igual.
+ *
+ * Mensagens canceladas ou que falharam de verdade continuam liberando um novo disparo.
+ */
+export const ONCE_ONLY_TEMPLATES = [
+  "confirmation",
+  "cancellation",
+  "post_visit",
+  "reminder_24h",
+  "reminder_2h",
+] as const;
+
+const ONCE_ONLY = new Set<string>(ONCE_ONLY_TEMPLATES);
+
+export function isOnceOnlyTemplate(key: string | null | undefined): boolean {
+  return Boolean(key && ONCE_ONLY.has(key));
+}

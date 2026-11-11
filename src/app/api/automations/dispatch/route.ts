@@ -5,6 +5,7 @@ import { jsonOk, handleApiError } from "@/lib/api";
 import { requirePermission } from "@/lib/auth/guards";
 import { formatDateTimeBR } from "@/modules/whatsapp/messages";
 import { sendMessage } from "@/modules/whatsapp/service";
+import { isOnceOnlyTemplate } from "@/modules/automation/rules";
 
 const dispatchSchema = z.object({
   templateKey: z.string().optional(),
@@ -85,7 +86,57 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // 4. Dispara mensagem imediata
+    // 4. Regra de "uma vez só" para os avisos do atendimento (confirmação, cancelamento,
+    // lembretes e pós-atendimento): se já saiu para este atendimento, não sai de novo.
+    // Sem atendimento vinculado, a checagem é por cliente. O automático já deduplica em
+    // `sendTemplateMessage`; aqui é o mesmo critério para o botão "Disparar".
+    if (templateKey && isOnceOnlyTemplate(templateKey)) {
+      const jaEnviada = await db.whatsAppMessage.findFirst({
+        where: {
+          orgId,
+          direction: "OUT",
+          templateKey,
+          status: { notIn: ["CANCELLED", "FAILED"] },
+          ...(appt
+            ? { appointmentId: appt.id }
+            : { customerId: customer.id, appointmentId: null }),
+        },
+        orderBy: { createdAt: "desc" },
+        select: { createdAt: true },
+      });
+
+      if (jaEnviada) {
+        const eventName = rule?.event ?? `template.${templateKey}`;
+        await db.automationExecution.create({
+          data: {
+            orgId,
+            ruleId: rule?.id ?? null,
+            event: `${eventName} (manual)`,
+            payload: JSON.stringify({
+              customerId: customer.id,
+              customerName: customer.name,
+              appointmentId: appt?.id,
+              manual: true,
+              userId: session.userId,
+            }),
+            status: "SKIPPED",
+            error: `${templateKey}: já enviada — cada aviso do atendimento sai uma única vez.`,
+          },
+        });
+
+        const nome = template?.name ?? templateKey;
+        return jsonOk(
+          {
+            error: `A mensagem "${nome}" já foi enviada ${
+              appt ? "para este atendimento" : `para ${customer.name}`
+            }. Cada aviso do atendimento sai uma única vez.`,
+          },
+          409
+        );
+      }
+    }
+
+    // 5. Dispara mensagem imediata
     const outcome = await sendMessage({
       orgId,
       phone: customer.phone,
@@ -98,7 +149,7 @@ export async function POST(req: NextRequest) {
       immediate: true,
     });
 
-    // 5. Registra a execução no histórico de automações
+    // 6. Registra a execução no histórico de automações
     const eventName = rule?.event ?? (templateKey ? `template.${templateKey}` : "manual.dispatch");
     await db.automationExecution.create({
       data: {
