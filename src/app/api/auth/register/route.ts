@@ -13,7 +13,10 @@ const schema = z.object({
   email: z.string().email("E-mail inválido").toLowerCase(),
   password: z.string().min(8, "A senha precisa ter ao menos 8 caracteres").max(72),
   phone: z.string().max(20).optional(),
-  adminPassword: z.string().min(1, "Informe a senha de administrador"),
+  adminPassword: z.preprocess(
+    (value) => (typeof value === "string" ? value : ""),
+    z.string().min(1, "Informe a senha de administrador")
+  ),
 });
 
 export async function POST(req: NextRequest) {
