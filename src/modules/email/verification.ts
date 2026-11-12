@@ -1,6 +1,5 @@
 import { SignJWT, jwtVerify } from "jose";
 import type { NextRequest } from "next/server";
-import nodemailer, { type Transporter } from "nodemailer";
 import { db } from "@/lib/db";
 
 /**
@@ -11,10 +10,10 @@ import { db } from "@/lib/db";
  * página /confirmar-email: scanner de e-mail que só abre o link (GET) não confirma a conta
  * sozinho.
  *
- * Envio: Gmail por SMTP quando GMAIL_USER + GMAIL_APP_PASSWORD estão configurados — é o caminho
- * que entrega para qualquer destinatário sem domínio próprio. Sem eles, cai no Resend
- * (RESEND_API_KEY + EMAIL_FROM), que só entrega para o dono da conta enquanto o remetente for
- * onboarding@resend.dev.
+ * Envio: API HTTP do Brevo (BREVO_API_KEY + EMAIL_FROM), que entrega para qualquer destinatário
+ * sem domínio próprio — basta verificar o e-mail remetente uma vez. Resend fica como reserva
+ * (RESEND_API_KEY), mas só entrega para o dono da conta enquanto o remetente for
+ * onboarding@resend.dev. SMTP não serve em produção: o Railway bloqueia as portas 465/587.
  */
 
 const PURPOSE = "email-verification";
@@ -91,6 +90,7 @@ export async function sendConfirmationForUser(opts: {
   return result;
 }
 
+const BREVO_ENDPOINT = "https://api.brevo.com/v3/smtp/email";
 const RESEND_ENDPOINT = "https://api.resend.com/emails";
 const SENDER_NAME = "Bela Agenda";
 
@@ -102,19 +102,22 @@ function escapeHtml(value: string): string {
     .replace(/"/g, "&quot;");
 }
 
-type GmailCredentials = { user: string; pass: string };
+/** `Bela Agenda <contato@x.com>` ou só `contato@x.com` -> remetente do Brevo. */
+function parseSender(raw: string | undefined): { name: string; email: string } | null {
+  const value = (raw ?? "").trim();
+  if (!value) return null;
+  const match = value.match(/^(.*?)\s*<([^>]+)>\s*$/);
+  const name = (match ? match[1].trim() : "") || SENDER_NAME;
+  const email = (match ? match[2] : value).trim();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return null;
+  return { name, email };
+}
 
-/**
- * O Gmail é o caminho que entrega para qualquer destinatário sem domínio próprio.
- * A senha de app tem 16 caracteres; valores marcadores (PENDENTE_*) deixados na Railway
- * não contam como configurados.
- */
-function gmailCredentials(): GmailCredentials | null {
-  const user = (process.env.GMAIL_USER ?? "").trim();
-  const pass = (process.env.GMAIL_APP_PASSWORD ?? "").replace(/\s+/g, "");
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(user)) return null;
-  if (pass.startsWith("PENDENTE") || pass.length !== 16) return null;
-  return { user, pass };
+/** Valores marcadores (PENDENTE_*) deixados na Railway não contam como configurados. */
+function brevoApiKey(): string | null {
+  const key = (process.env.BREVO_API_KEY ?? "").trim();
+  if (key.startsWith("PENDENTE") || key.length < 20) return null;
+  return key;
 }
 
 function resendApiKey(): string | null {
@@ -123,35 +126,36 @@ function resendApiKey(): string | null {
   return key;
 }
 
-let gmailTransport: Transporter | null = null;
-let gmailTransportUser: string | null = null;
-
-function gmailTransportFor(creds: GmailCredentials): Transporter {
-  if (!gmailTransport || gmailTransportUser !== creds.user) {
-    gmailTransport = nodemailer.createTransport({
-      service: "gmail",
-      auth: { user: creds.user, pass: creds.pass },
-    });
-    gmailTransportUser = creds.user;
-  }
-  return gmailTransport;
-}
-
-async function sendViaGmail(
-  creds: GmailCredentials,
+async function sendViaBrevo(
+  key: string,
+  sender: { name: string; email: string },
   mail: { to: string; subject: string; html: string; text: string }
 ): Promise<EmailSendResult> {
   try {
-    await gmailTransportFor(creds).sendMail({
-      from: { name: SENDER_NAME, address: creds.user },
-      to: mail.to,
-      subject: mail.subject,
-      html: mail.html,
-      text: mail.text,
+    const res = await fetch(BREVO_ENDPOINT, {
+      method: "POST",
+      headers: {
+        "api-key": key,
+        "Content-Type": "application/json",
+        accept: "application/json",
+      },
+      body: JSON.stringify({
+        sender,
+        to: [{ email: mail.to }],
+        subject: mail.subject,
+        htmlContent: mail.html,
+        textContent: mail.text,
+      }),
     });
+
+    if (!res.ok) {
+      const detail = await res.text().catch(() => "");
+      console.error(`[email] Brevo recusou o envio (${res.status}): ${detail.slice(0, 300)}`);
+      return { ok: false, reason: "provider_error" };
+    }
     return { ok: true };
   } catch (err) {
-    console.error("[email] Gmail recusou o envio:", err instanceof Error ? err.message : err);
+    console.error("[email] Falha de rede ao enviar pelo Brevo:", err instanceof Error ? err.message : err);
     return { ok: false, reason: "provider_error" };
   }
 }
@@ -166,7 +170,8 @@ export async function sendVerificationEmail(opts: {
   clinicName: string;
   url: string;
 }): Promise<EmailSendResult> {
-  const gmail = gmailCredentials();
+  const brevoKey = brevoApiKey();
+  const sender = parseSender(process.env.EMAIL_FROM);
   const apiKey = resendApiKey();
 
   const name = escapeHtml(opts.name);
@@ -210,8 +215,12 @@ export async function sendVerificationEmail(opts: {
     "O link vale por 24 horas. Se você não fez este cadastro, ignore esta mensagem.",
   ].join("\n");
 
-  if (gmail) {
-    return sendViaGmail(gmail, { to: opts.to, subject, html, text });
+  if (brevoKey) {
+    if (!sender) {
+      console.error("[email] BREVO_API_KEY definida, mas EMAIL_FROM não tem um e-mail válido — nada será enviado.");
+      return { ok: false, reason: "not_configured" };
+    }
+    return sendViaBrevo(brevoKey, sender, { to: opts.to, subject, html, text });
   }
 
   if (!apiKey) {
@@ -219,7 +228,7 @@ export async function sendVerificationEmail(opts: {
     // Em desenvolvimento imprimimos o link para conseguir testar o fluxo sem e-mail.
     if (process.env.NODE_ENV !== "production") {
       console.warn(
-        `[email] Nenhum provedor configurado (GMAIL_USER/GMAIL_APP_PASSWORD ou RESEND_API_KEY). Link de confirmação (dev): ${opts.url}`
+        `[email] Nenhum provedor configurado (BREVO_API_KEY ou RESEND_API_KEY). Link de confirmação (dev): ${opts.url}`
       );
     } else {
       console.error("[email] Nenhum provedor configurado: nenhum e-mail de confirmação foi enviado.");
