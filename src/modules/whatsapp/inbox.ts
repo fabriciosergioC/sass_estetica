@@ -47,18 +47,41 @@ export async function listConversations(
   opts: { filter?: ConversationFilter; search?: string; userId?: string | null; take?: number; skip?: number } = {}
 ): Promise<{ items: ConversationListItem[]; total: number }> {
   const filter = opts.filter ?? "all";
-  const where: Record<string, unknown> = { orgId, archived: false };
+  const where: Record<string, any> = { orgId, archived: false };
 
-  if (filter === "appointments") {
-    const customersWithAppts = await db.appointment.findMany({
-      where: { orgId, status: { in: ["SCHEDULED", "CONFIRMED", "IN_SERVICE"] } },
+  // As abas do painel (Agendamentos, Em atendimento, Aguardando resposta e Finalizadas) são
+  // recortes da AGENDA: só entram conversas de clientes que existem no menu Agenda. Antes elas
+  // eram só um filtro de status da conversa, então qualquer contato que mandasse "oi" aparecia
+  // em "Finalizadas"/"Aguardando resposta" mesmo sem nunca ter sido agendado.
+  //
+  // "Todas" continua mostrando tudo, inclusive quem nunca agendou.
+  if (filter !== "all") {
+    const appointments = await db.appointment.findMany({
+      where: {
+        orgId,
+        // A aba "Agendamentos" é a agenda de hoje em diante (horário ativo); as demais abas
+        // aceitam qualquer agendamento do cliente, senão "Finalizadas" nunca teria ninguém.
+        ...(filter === "appointments"
+          ? { status: { in: ["SCHEDULED", "CONFIRMED", "IN_SERVICE"] } }
+          : {}),
+      },
       select: { customerId: true },
       distinct: ["customerId"],
     });
-    const customerIds = customersWithAppts.map((a) => a.customerId).filter(Boolean);
-    where.customerId = { in: customerIds };
-  } else {
-    Object.assign(where, FILTER_WHERE[filter]);
+    const customerIds = [...new Set(appointments.map((a) => a.customerId).filter(Boolean))];
+
+    // O vínculo do cliente pode estar na conversa ou só no contato — é o caso mais comum de
+    // quem chegou pelo WhatsApp e foi agendado depois no menu Agenda.
+    where.AND = [
+      {
+        OR: [
+          { customerId: { in: customerIds } },
+          { contact: { customerId: { in: customerIds } } },
+        ],
+      },
+    ];
+
+    if (filter !== "appointments") Object.assign(where, FILTER_WHERE[filter]);
   }
 
   const q = opts.search?.trim();
