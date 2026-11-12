@@ -55,7 +55,7 @@ export async function GET(req: NextRequest) {
     const end = new Date(localDateTime(toKey(to), "00:00").getTime() + DAY_MS);
     const whereBase = { orgId, status: "PAID", paidAt: { gte: start, lt: end } };
 
-    const [items, grouped] = await Promise.all([
+    const [items, grouped, pendingRows] = await Promise.all([
       db.payment.findMany({
         where: { ...whereBase, ...(rawMethod ? { method: rawMethod } : {}) },
         orderBy: { paidAt: "desc" },
@@ -68,6 +68,32 @@ export async function GET(req: NextRequest) {
         _sum: { amountCents: true },
         _count: { _all: true },
       }),
+      // Atendimentos concluídos que ainda não têm recebimento. São listados na tela como
+      // PENDENTES — não entram no total recebido e não criam linha em Payment: o caixa só
+      // ganha o lançamento quando o operador informa valor e forma.
+      //
+      // A lista ignora o filtro de período de propósito: um atendimento de mês passado sem
+      // lançamento continua aparecendo aqui até ser resolvido, em vez de sumir junto com a
+      // data. O filtro por forma, sim, esconde os pendentes (eles ainda não têm forma).
+      rawMethod
+        ? Promise.resolve([])
+        : db.appointment.findMany({
+            where: {
+              orgId,
+              status: "COMPLETED",
+              payments: { none: { status: "PAID" } },
+            },
+            orderBy: { startAt: "desc" },
+            take: 100,
+            select: {
+              id: true,
+              startAt: true,
+              priceCents: true,
+              customer: { select: { id: true, name: true, phone: true } },
+              service: { select: { name: true } },
+              barber: { select: { name: true } },
+            },
+          }),
     ]);
 
     const byMethod: Record<string, { cents: number; count: number }> = {};
@@ -80,11 +106,27 @@ export async function GET(req: NextRequest) {
     }
     const totalCents = Object.values(byMethod).reduce((sum, entry) => sum + entry.cents, 0);
 
+    const pending = pendingRows.map((row) => ({
+      appointmentId: row.id,
+      amountCents: row.priceCents,
+      startAt: row.startAt,
+      customer: row.customer,
+      service: row.service,
+      barber: row.barber,
+    }));
+
     return jsonOk({
       from: toKey(from),
       to: toKey(to),
       items,
-      totals: { totalCents, count: Object.values(byMethod).reduce((sum, entry) => sum + entry.count, 0), byMethod },
+      pending,
+      totals: {
+        totalCents,
+        count: Object.values(byMethod).reduce((sum, entry) => sum + entry.count, 0),
+        byMethod,
+        pendingCents: pending.reduce((sum, entry) => sum + entry.amountCents, 0),
+        pendingCount: pending.length,
+      },
     });
   } catch (err) {
     return handleApiError(err);

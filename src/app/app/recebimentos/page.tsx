@@ -38,12 +38,25 @@ type Totals = {
   totalCents: number;
   count: number;
   byMethod: Record<string, { cents: number; count: number }>;
+  pendingCents: number;
+  pendingCount: number;
+};
+
+/** Atendimento concluído sem lançamento no caixa — ainda não é dinheiro recebido. */
+type PendingReceipt = {
+  appointmentId: string;
+  amountCents: number;
+  startAt: string;
+  customer: { id: string; name: string; phone: string | null } | null;
+  service: { name: string } | null;
+  barber: { name: string } | null;
 };
 
 type PaymentsResponse = {
   from: string;
   to: string;
   items: Receipt[];
+  pending: PendingReceipt[];
   totals: Totals;
 };
 
@@ -73,6 +86,13 @@ function centsToInput(cents: number): string {
   return (cents / 100).toFixed(2).replace(".", ",");
 }
 
+function appointmentOptionLabel(appointment: AppointmentOption): string {
+  const at = new Date(appointment.startAt);
+  return `${at.toLocaleDateString("pt-BR")} ${formatBusinessTime(at)} · ${
+    appointment.customer?.name ?? "Cliente"
+  }${appointment.service ? ` · ${appointment.service.name}` : ""}`;
+}
+
 /** Data digitada → instante do recebimento: hoje mantém a hora real; dia passado usa 12:00. */
 function paidAtFor(dateKey: string): string {
   if (dateKey === todayKey()) return new Date().toISOString();
@@ -97,6 +117,9 @@ export default function RecebimentosPage() {
   const [saving, setSaving] = useState(false);
   const [appointments, setAppointments] = useState<AppointmentOption[]>([]);
   const [appointmentsLoading, setAppointmentsLoading] = useState(false);
+  // Atendimento pendente escolhido na lista: pode estar fora da janela de 30 dias do seletor,
+  // então guardamos ele aqui para o campo mostrar o cliente certo em vez de "Avulso".
+  const [seedAppointment, setSeedAppointment] = useState<AppointmentOption | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -164,7 +187,30 @@ export default function RecebimentosPage() {
 
   function openCreate() {
     setFormErrors({});
+    setSeedAppointment(null);
     setDraft({ appointmentId: "", amount: "", method: "CASH", date: todayKey() });
+    setDialog({ mode: "create" });
+  }
+
+  /** "Registrar" de um atendimento pendente: já abre vinculado, com o valor do serviço. */
+  function openCreateForPending(pending: PendingReceipt) {
+    setFormErrors({});
+    const appointmentDay = toKey(new Date(pending.startAt));
+    setSeedAppointment({
+      id: pending.appointmentId,
+      startAt: pending.startAt,
+      status: "COMPLETED",
+      priceCents: pending.amountCents,
+      customer: pending.customer ? { name: pending.customer.name } : null,
+      service: pending.service,
+    });
+    setDraft({
+      appointmentId: pending.appointmentId,
+      amount: centsToInput(pending.amountCents),
+      method: "CASH",
+      // Recebimento não pode ser datado no futuro; atendimento adiantado cai em hoje.
+      date: appointmentDay > todayKey() ? todayKey() : appointmentDay,
+    });
     setDialog({ mode: "create" });
   }
 
@@ -232,6 +278,7 @@ export default function RecebimentosPage() {
 
   const totals = data?.totals;
   const items = data?.items ?? [];
+  const pending = data?.pending ?? [];
   const isEditing = dialog?.mode === "edit";
 
   return (
@@ -240,8 +287,8 @@ export default function RecebimentosPage() {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Recebimentos</h1>
           <p className="mt-1 text-sm text-zinc-500">
-            O que entrou no caixa por forma de pagamento. Atendimentos concluídos ficam com recebimento
-            pendente até você registrar a forma aqui ou pelo botão na própria Agenda.
+            O que entrou no caixa por forma de pagamento. Atendimentos concluídos sem lançamento
+            aparecem como pendentes até você registrar a forma aqui ou pelo botão na própria Agenda.
           </p>
         </div>
         <Button onClick={openCreate}>＋ Novo recebimento</Button>
@@ -309,6 +356,11 @@ export default function RecebimentosPage() {
           <div>
             <p className="text-xs font-medium uppercase tracking-wide text-zinc-400">Total recebido no período</p>
             <p className="mt-1 text-3xl font-semibold text-gold-300">{formatBRL(totals?.totalCents ?? 0)}</p>
+            {pending.length > 0 && (
+              <p className="mt-1 text-xs text-amber-300">
+                + {formatBRL(totals?.pendingCents ?? 0)} aguardando recebimento ({pending.length} atendimento(s))
+              </p>
+            )}
           </div>
           <Badge tone="gold">{totals?.count ?? 0} lançamento(s)</Badge>
         </Card>
@@ -337,14 +389,66 @@ export default function RecebimentosPage() {
           <div className="h-4 w-1/3 rounded bg-zinc-800" />
           <div className="mt-3 h-3 w-2/3 rounded bg-zinc-800/70" />
         </Card>
-      ) : items.length === 0 ? (
-        <EmptyState
-          icon="💰"
-          title="Nenhum recebimento no período"
-          description="Registre um recebimento manual ou ajuste as datas para ver o que já entrou no caixa."
-          action={<Button variant="secondary" onClick={openCreate}>Registrar recebimento</Button>}
-        />
       ) : (
+        <>
+          {/* Concluídos sem lançamento: aparecem aqui para o operador registrar, mas não
+              somam no total — enquanto não há forma e valor, não é dinheiro no caixa. */}
+          {pending.length > 0 && (
+            <Card className="border-amber-500/30 bg-amber-500/[0.04]">
+              <div className="border-b border-zinc-800/60 px-5 py-3">
+                <div className="flex items-center justify-between gap-2">
+                  <h2 className="font-medium">Aguardando recebimento</h2>
+                  <Badge tone="amber">{pending.length} pendente(s)</Badge>
+                </div>
+                <p className="mt-1 text-xs text-zinc-500">
+                  Atendimentos concluídos sem lançamento no caixa — não somam no total recebido e
+                  continuam aqui até você registrar a forma.
+                </p>
+              </div>
+              <ul className="divide-y divide-zinc-800/60">
+                {pending.map((item) => {
+                  const at = new Date(item.startAt);
+                  return (
+                    <li key={item.appointmentId} className="flex flex-wrap items-center justify-between gap-3 px-5 py-3">
+                      <div className="min-w-0">
+                        <p className="flex flex-wrap items-center gap-2 text-sm font-medium text-zinc-100">
+                          {item.customer?.name ?? "Cliente"}
+                          <Badge tone="amber">Pendente</Badge>
+                        </p>
+                        <p className="mt-0.5 text-xs text-zinc-500">
+                          {at.toLocaleDateString("pt-BR")} às {formatBusinessTime(at)}
+                          {item.service ? ` · ${item.service.name}` : ""}
+                          {item.barber ? ` · ${item.barber.name}` : ""}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <span className="text-sm font-semibold text-amber-300">{formatBRL(item.amountCents)}</span>
+                        <Button variant="action" onClick={() => openCreateForPending(item)}>
+                          Registrar
+                        </Button>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            </Card>
+          )}
+
+          {items.length === 0 ? (
+            pending.length === 0 ? (
+              <EmptyState
+                icon="💰"
+                title="Nenhum recebimento no período"
+                description="Registre um recebimento manual ou ajuste as datas para ver o que já entrou no caixa."
+                action={<Button variant="secondary" onClick={openCreate}>Registrar recebimento</Button>}
+              />
+            ) : (
+              <Card className="p-5 text-sm text-zinc-500">
+                Nenhum recebimento registrado no período. Os atendimentos pendentes acima viram
+                lançamento quando você informar valor e forma de pagamento.
+              </Card>
+            )
+          ) : (
         <Card>
           <div className="flex items-center justify-between border-b border-zinc-800/60 px-5 py-3">
             <h2 className="font-medium">Lançamentos</h2>
@@ -384,6 +488,8 @@ export default function RecebimentosPage() {
             })}
           </ul>
         </Card>
+          )}
+        </>
       )}
 
       <Dialog
@@ -403,17 +509,14 @@ export default function RecebimentosPage() {
                 disabled={appointmentsLoading}
               >
                 <option value="">{appointmentsLoading ? "Carregando atendimentos..." : "Sem atendimento (avulso)"}</option>
-                {appointments.map((appointment) => {
-                  const at = new Date(appointment.startAt);
-                  const label = `${at.toLocaleDateString("pt-BR")} ${formatBusinessTime(at)} · ${
-                    appointment.customer?.name ?? "Cliente"
-                  }${appointment.service ? ` · ${appointment.service.name}` : ""}`;
-                  return (
-                    <option key={appointment.id} value={appointment.id}>
-                      {label}
-                    </option>
-                  );
-                })}
+                {seedAppointment && !appointments.some((item) => item.id === seedAppointment.id) && (
+                  <option value={seedAppointment.id}>{appointmentOptionLabel(seedAppointment)}</option>
+                )}
+                {appointments.map((appointment) => (
+                  <option key={appointment.id} value={appointment.id}>
+                    {appointmentOptionLabel(appointment)}
+                  </option>
+                ))}
               </Select>
             </Field>
           )}
