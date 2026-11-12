@@ -2,9 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { db } from "@/lib/db";
 import { hashPassword } from "@/lib/auth/password";
-import { setSessionCookie } from "@/lib/auth/session";
 import { handleApiError } from "@/lib/api";
 import { provisionOrganization, uniqueSlug } from "@/modules/organizations/service";
+import { appOrigin, sendConfirmationForUser } from "@/modules/email/verification";
 
 const schema = z.object({
   barbearia: z.string().min(2, "Informe o nome da clínica").max(80),
@@ -43,17 +43,26 @@ export async function POST(req: NextRequest) {
       return { user, org };
     });
 
-    await setSessionCookie({
-      userId: user.id,
-      email: user.email,
-      name: user.name,
-      isSuperAdmin: false,
-      tokenVersion: user.tokenVersion,
-      activeOrgId: org.id,
-      role: "ADMIN",
-    });
+    // A conta nasce bloqueada para login até o e-mail ser confirmado — por isso não abrimos
+    // sessão aqui. O cliente recebe o link e entra pela tela de login depois de confirmar.
+    let emailSent = false;
+    try {
+      const result = await sendConfirmationForUser({
+        user: { id: user.id, email: user.email, name: user.name },
+        clinicName: org.name,
+        origin: appOrigin(req),
+      });
+      emailSent = result.ok;
+    } catch (err) {
+      // Conta criada e recuperável: a tela oferece "Reenviar e-mail" e o login tem o mesmo
+      // caminho. Falhar aqui não pode desfazer o cadastro da clínica.
+      console.error("[register] Falha ao enviar confirmação de e-mail:", err instanceof Error ? err.message : err);
+    }
 
-    return NextResponse.json({ ok: true, org: { id: org.id, slug: org.slug } }, { status: 201 });
+    return NextResponse.json(
+      { ok: true, emailSent, email: user.email, org: { id: org.id, slug: org.slug } },
+      { status: 201 }
+    );
   } catch (err) {
     return handleApiError(err);
   }

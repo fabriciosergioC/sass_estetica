@@ -116,7 +116,14 @@ async function main() {
   for (const [orgIdx, cfg] of ORGS.entries()) {
     console.log(`💈 ${cfg.name}...`);
     const user = await db.user.create({
-      data: { name: cfg.admin.name, email: cfg.admin.email, passwordHash, phone: nextPhone() },
+      data: {
+        name: cfg.admin.name,
+        email: cfg.admin.email,
+        passwordHash,
+        phone: nextPhone(),
+        // Contas de demonstração já nascem confirmadas, senão o login fica bloqueado.
+        emailVerifiedAt: new Date(),
+      },
     });
 
     const org = await db.organization.create({

@@ -87,6 +87,10 @@ model User {
   phone        String?
   isSuperAdmin Boolean  @default(false)
   tokenVersion Int      @default(0) // invalida JWTs ao trocar senha
+  // Confirmação de e-mail do cadastro. Contas criadas antes da verificação existir são
+  // marcadas como confirmadas na migração; só as novas passam pelo link.
+  emailVerifiedAt DateTime?
+  emailVerificationSentAt DateTime?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
