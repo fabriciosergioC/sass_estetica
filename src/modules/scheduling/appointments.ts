@@ -379,28 +379,44 @@ export async function changeStatus(opts: {
         });
 
         if (!template || template.enabled) {
-          const body =
-            template?.body ||
-            "Olá, {{cliente}}! Obrigado pela visita na {{barbearia}}! Esperamos você novamente. Se puder, deixe sua avaliação. ✨";
-
-          const { sendMessage } = await import("@/modules/whatsapp/service");
-          const outcome = await sendMessage({
-            orgId: opts.orgId,
-            phone: customer.phone,
-            customerId: customer.id,
-            appointmentId: current.id,
-            body,
-            templateKey: "post_visit",
-            userId: opts.userId,
-            immediate: true,
+          // A regra "Atendimento concluído → Agendar lembrete (Pós-atendimento)" já deixou
+          // esta mensagem na fila (30 min depois) em publishEvent. Mandar o imediato também
+          // fazia o cliente receber dois agradecimentos pelo mesmo atendimento — o aviso sai
+          // uma única vez. Sem a regra (clínica antiga), o imediato continua sendo o único.
+          const jaNaFila = await db.whatsAppMessage.findFirst({
+            where: {
+              orgId: opts.orgId,
+              appointmentId: current.id,
+              templateKey: "post_visit",
+              status: { notIn: ["CANCELLED", "FAILED"] },
+            },
+            select: { id: true },
           });
 
-          whatsappOutcome = {
-            sent: outcome.ok,
-            status: outcome.status,
-            error: outcome.error,
-            friendly: outcome.friendly,
-          };
+          if (!jaNaFila) {
+            const body =
+              template?.body ||
+              "Olá, {{cliente}}! Obrigado pela visita na {{barbearia}}! Esperamos você novamente. Se puder, deixe sua avaliação. ✨";
+
+            const { sendMessage } = await import("@/modules/whatsapp/service");
+            const outcome = await sendMessage({
+              orgId: opts.orgId,
+              phone: customer.phone,
+              customerId: customer.id,
+              appointmentId: current.id,
+              body,
+              templateKey: "post_visit",
+              userId: opts.userId,
+              immediate: true,
+            });
+
+            whatsappOutcome = {
+              sent: outcome.ok,
+              status: outcome.status,
+              error: outcome.error,
+              friendly: outcome.friendly,
+            };
+          }
         }
       }
     } catch (err) {
@@ -415,7 +431,12 @@ export async function changeStatus(opts: {
   // Cancelou: o que estava na fila para este horário não pode mais sair. Sem isto o cliente
   // recebia o lembrete de 24h/2h de um horário que a clínica já tinha cancelado (o
   // cancelamento em si é enviado logo abaixo).
+  //
+  // O pós-atendimento entra na mesma varredura, com motivo próprio: a regra "Atendimento
+  // concluído → Agendar lembrete (Pós-atendimento)" o deixa 30 min na fila, e cancelar dentro
+  // desse intervalo mandava um "obrigado pela visita" para quem não foi atendido.
   if (["CANCELLED", "NO_SHOW"].includes(opts.to)) {
+    const faltou = opts.to === "NO_SHOW";
     const cancelados = await db.whatsAppMessage.updateMany({
       where: {
         orgId: opts.orgId,
@@ -425,14 +446,30 @@ export async function changeStatus(opts: {
       },
       data: {
         status: "CANCELLED",
-        error:
-          opts.to === "NO_SHOW"
-            ? "Cliente marcado como falta: o lembrete não será mais enviado."
-            : "Agendamento cancelado: o lembrete não será mais enviado.",
+        error: faltou
+          ? "Cliente marcado como falta: o lembrete não será mais enviado."
+          : "Agendamento cancelado: o lembrete não será mais enviado.",
+      },
+    });
+    const posAtendimento = await db.whatsAppMessage.updateMany({
+      where: {
+        orgId: opts.orgId,
+        appointmentId: current.id,
+        status: "QUEUED",
+        templateKey: "post_visit",
+      },
+      data: {
+        status: "CANCELLED",
+        error: faltou
+          ? "Cliente marcado como falta: a mensagem pós-atendimento não será enviada."
+          : "Agendamento cancelado: a mensagem pós-atendimento não será enviada.",
       },
     });
     if (cancelados.count > 0) {
       console.log(`[changeStatus] ${cancelados.count} mensagem(ns) pendente(s) cancelada(s) — ${opts.to}`);
+    }
+    if (posAtendimento.count > 0) {
+      console.log(`[changeStatus] ${posAtendimento.count} mensagem(ns) pós-atendimento cancelada(s) — ${opts.to}`);
     }
   }
 

@@ -94,10 +94,17 @@ async function handleSendWhatsapp(jobId: string, payload: JobPayload): Promise<J
       where: { id: message.appointmentId },
       select: { status: true },
     });
-    if (appt && ["CANCELLED", "RESCHEDULED"].includes(appt.status)) {
+    if (appt && ["CANCELLED", "RESCHEDULED", "NO_SHOW"].includes(appt.status)) {
+      // Última barreira: mesmo que a mensagem tenha sido criada antes do cancelamento (ou que
+      // uma rotina antiga a tenha posto na fila), o pós-atendimento nunca sai para quem não
+      // foi atendido — e os lembretes também não.
+      const motivo =
+        message.templateKey === "post_visit"
+          ? "Atendimento cancelado ou marcado como falta: a mensagem pós-atendimento não será enviada."
+          : "Agendamento cancelado/remarcado antes do envio.";
       await db.whatsAppMessage.update({
         where: { id: message.id },
-        data: { status: "CANCELLED", error: "Agendamento cancelado/remarcado antes do envio." },
+        data: { status: "CANCELLED", error: motivo },
       });
       return;
     }

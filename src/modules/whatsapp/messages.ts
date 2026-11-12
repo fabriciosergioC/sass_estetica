@@ -92,6 +92,21 @@ export async function sendTemplateMessage(opts: {
   }
   if (!phone || !optIn) return false;
 
+  // Nenhum aviso que depende de ter havido atendimento pode ser criado para um horário já
+  // cancelado (ou marcado como falta). É o caso do pós-atendimento: a regra "Atendimento
+  // concluído → Agendar lembrete (Pós-atendimento)" o coloca na fila 30 min depois, e o
+  // cancelamento no meio desse intervalo não pode terminar com um "obrigado pela visita"
+  // para quem não foi atendido. `cancellation`/`reschedule` ficam de fora porque existem
+  // justamente para anunciar a mudança.
+  const anunciaMudanca = templateKey === "cancellation" || templateKey === "reschedule";
+  if (v.appointmentId && !anunciaMudanca) {
+    const appt = await db.appointment.findFirst({
+      where: { id: v.appointmentId, orgId },
+      select: { status: true },
+    });
+    if (appt && ["CANCELLED", "NO_SHOW"].includes(appt.status)) return false;
+  }
+
   if (v.appointmentId) {
     const existing = await db.whatsAppMessage.findFirst({
       where: { orgId, appointmentId: v.appointmentId, templateKey, status: { notIn: ["CANCELLED", "FAILED"] } },
