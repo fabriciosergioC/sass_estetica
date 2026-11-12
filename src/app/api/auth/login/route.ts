@@ -30,19 +30,6 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "E-mail ou senha incorretos." }, { status: 401 });
     }
 
-    // Cadastro novo só entra depois de confirmar o e-mail. Contas antigas foram marcadas
-    // como confirmadas na migração, então ninguém que já usava o sistema fica de fora.
-    if (!user.emailVerifiedAt) {
-      return NextResponse.json(
-        {
-          error: "Confirme seu e-mail antes de entrar. O link de confirmação foi enviado para " + user.email + ".",
-          code: "EMAIL_NOT_VERIFIED",
-          email: user.email,
-        },
-        { status: 403 }
-      );
-    }
-
     const activeMembership = user.memberships.find((m) => m.org.status === "ACTIVE") ?? user.memberships[0];
 
     // Cacheia memberships e nome da org na sessão para evitar queries no banco

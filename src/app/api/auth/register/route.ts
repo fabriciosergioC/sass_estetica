@@ -2,9 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { db } from "@/lib/db";
 import { hashPassword } from "@/lib/auth/password";
+import { setSessionCookie } from "@/lib/auth/session";
+import { adminSignupPassword, isAdminSignupPassword } from "@/lib/auth/admin-password";
 import { handleApiError } from "@/lib/api";
 import { provisionOrganization, uniqueSlug } from "@/modules/organizations/service";
-import { appOrigin, sendConfirmationForUser } from "@/modules/email/verification";
 
 const schema = z.object({
   barbearia: z.string().min(2, "Informe o nome da clínica").max(80),
@@ -12,11 +13,25 @@ const schema = z.object({
   email: z.string().email("E-mail inválido").toLowerCase(),
   password: z.string().min(8, "A senha precisa ter ao menos 8 caracteres").max(72),
   phone: z.string().max(20).optional(),
+  adminPassword: z.string().min(1, "Informe a senha de administrador"),
 });
 
 export async function POST(req: NextRequest) {
   try {
     const body = schema.parse(await req.json());
+
+    // Só quem tem a senha de administrador cria novas empresas. Ela é conferida antes de
+    // qualquer escrita para não deixar rastro de cadastro recusado.
+    if (!adminSignupPassword()) {
+      console.error("[register] ADMIN_SIGNUP_PASSWORD não configurada: cadastro de empresas desativado.");
+      return NextResponse.json(
+        { error: "O cadastro de novas empresas está desativado no servidor." },
+        { status: 503 }
+      );
+    }
+    if (!isAdminSignupPassword(body.adminPassword)) {
+      return NextResponse.json({ error: "Senha de administrador incorreta." }, { status: 403 });
+    }
 
     const existing = await db.user.findUnique({ where: { email: body.email } });
     if (existing) {
@@ -43,26 +58,17 @@ export async function POST(req: NextRequest) {
       return { user, org };
     });
 
-    // A conta nasce bloqueada para login até o e-mail ser confirmado — por isso não abrimos
-    // sessão aqui. O cliente recebe o link e entra pela tela de login depois de confirmar.
-    let emailSent = false;
-    try {
-      const result = await sendConfirmationForUser({
-        user: { id: user.id, email: user.email, name: user.name },
-        clinicName: org.name,
-        origin: appOrigin(req),
-      });
-      emailSent = result.ok;
-    } catch (err) {
-      // Conta criada e recuperável: a tela oferece "Reenviar e-mail" e o login tem o mesmo
-      // caminho. Falhar aqui não pode desfazer o cadastro da clínica.
-      console.error("[register] Falha ao enviar confirmação de e-mail:", err instanceof Error ? err.message : err);
-    }
+    await setSessionCookie({
+      userId: user.id,
+      email: user.email,
+      name: user.name,
+      isSuperAdmin: false,
+      tokenVersion: user.tokenVersion,
+      activeOrgId: org.id,
+      role: "ADMIN",
+    });
 
-    return NextResponse.json(
-      { ok: true, emailSent, email: user.email, org: { id: org.id, slug: org.slug } },
-      { status: 201 }
-    );
+    return NextResponse.json({ ok: true, org: { id: org.id, slug: org.slug } }, { status: 201 });
   } catch (err) {
     return handleApiError(err);
   }

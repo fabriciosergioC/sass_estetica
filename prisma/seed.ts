@@ -121,8 +121,6 @@ async function main() {
         email: cfg.admin.email,
         passwordHash,
         phone: nextPhone(),
-        // Contas de demonstração já nascem confirmadas, senão o login fica bloqueado.
-        emailVerifiedAt: new Date(),
       },
     });
 
