@@ -1,4 +1,5 @@
 import type { Metadata, Viewport } from "next";
+import { PwaInstaller } from "@/components/pwa";
 import { ThemeProvider } from "@/components/theme";
 import { bootstrapScript, DEFAULT_THEME } from "@/lib/theme";
 import "./globals.css";
@@ -10,6 +11,14 @@ export const metadata: Metadata = {
   },
   description:
     "Plataforma de gestão inteligente para clínicas: agenda, CRM, WhatsApp automático e oportunidades de faturamento.",
+  // PWA: nome usado pelo Android/Windows quando o painel é instalado e pelo iOS na tela inicial.
+  applicationName: "Gestão Estética",
+  appleWebApp: {
+    capable: true,
+    title: "Gestão",
+    statusBarStyle: "black",
+  },
+  formatDetection: { telephone: false },
 };
 
 export const viewport: Viewport = {
@@ -36,9 +45,13 @@ export default function RootLayout({
           escolheu o modo claro veria um flash do fundo escuro em toda navegação.
         */}
         <script dangerouslySetInnerHTML={{ __html: bootstrapScript() }} />
+        {/* O Next emite `mobile-web-app-capable`; o iOS mais antigo ainda lê a variante Apple. */}
+        <meta name="apple-mobile-web-app-capable" content="yes" />
       </head>
       <body>
         <ThemeProvider>{children}</ThemeProvider>
+        {/* Registra o service worker e oferece a instalação do PWA (Android, PC e iOS). */}
+        <PwaInstaller />
       </body>
     </html>
   );
