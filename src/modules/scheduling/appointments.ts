@@ -380,9 +380,9 @@ export async function changeStatus(opts: {
 
         if (!template || template.enabled) {
           // A regra "Atendimento concluído → Agendar lembrete (Pós-atendimento)" já deixou
-          // esta mensagem na fila (30 min depois) em publishEvent. Mandar o imediato também
-          // fazia o cliente receber dois agradecimentos pelo mesmo atendimento — o aviso sai
-          // uma única vez. Sem a regra (clínica antiga), o imediato continua sendo o único.
+          // esta mensagem na fila em publishEvent (sem atraso, ver DEFAULT_RULES). Mandar o
+          // imediato também faria o cliente receber dois agradecimentos pelo mesmo atendimento
+          // — o aviso sai uma única vez. Sem a regra (clínica antiga), o imediato é o único.
           const jaNaFila = await db.whatsAppMessage.findFirst({
             where: {
               orgId: opts.orgId,
@@ -433,8 +433,8 @@ export async function changeStatus(opts: {
   // cancelamento em si é enviado logo abaixo).
   //
   // O pós-atendimento entra na mesma varredura, com motivo próprio: a regra "Atendimento
-  // concluído → Agendar lembrete (Pós-atendimento)" o deixa 30 min na fila, e cancelar dentro
-  // desse intervalo mandava um "obrigado pela visita" para quem não foi atendido.
+  // concluído → Agendar lembrete (Pós-atendimento)" o deixa na fila, e cancelar logo depois
+  // mandava um "obrigado pela visita" para quem não foi atendido.
   if (["CANCELLED", "NO_SHOW"].includes(opts.to)) {
     const faltou = opts.to === "NO_SHOW";
     const cancelados = await db.whatsAppMessage.updateMany({

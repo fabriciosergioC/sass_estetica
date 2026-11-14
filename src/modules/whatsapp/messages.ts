@@ -94,8 +94,8 @@ export async function sendTemplateMessage(opts: {
 
   // Nenhum aviso que depende de ter havido atendimento pode ser criado para um horário já
   // cancelado (ou marcado como falta). É o caso do pós-atendimento: a regra "Atendimento
-  // concluído → Agendar lembrete (Pós-atendimento)" o coloca na fila 30 min depois, e o
-  // cancelamento no meio desse intervalo não pode terminar com um "obrigado pela visita"
+  // concluído → Agendar lembrete (Pós-atendimento)" o coloca na fila na hora, e o
+  // cancelamento logo depois não pode terminar com um "obrigado pela visita"
   // para quem não foi atendido. `cancellation`/`reschedule` ficam de fora porque existem
   // justamente para anunciar a mudança.
   const anunciaMudanca = templateKey === "cancellation" || templateKey === "reschedule";

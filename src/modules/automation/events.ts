@@ -52,7 +52,7 @@ export type DecisaoLembrete = { runAt: Date | null; motivo: string };
  * hoje. Então a pergunta certa não é "atrasou?", é "ainda faz sentido avisar?".
  *
  * Regras:
- *  - sem `hoursBefore`: é uma regra por atraso (ex: pós-atendimento 30 min depois) → sempre sai;
+ *  - sem `hoursBefore`: é uma regra por atraso (ex: pós-atendimento, hoje sem espera) → sempre sai;
  *  - `runAt` no futuro: sai na antecedência pedida;
  *  - `runAt` no passado e o horário é em OUTRO dia: sai agora (o aviso ainda vale);
  *  - `runAt` no passado e o horário é HOJE (ou já passou): não sai — a confirmação já trouxe

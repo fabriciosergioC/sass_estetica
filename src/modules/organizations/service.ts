@@ -95,7 +95,9 @@ export const DEFAULT_RULES: Array<{ event: string; action: string; config: Recor
   { event: "appointment.rescheduled", action: "send_whatsapp", config: { template: "reschedule" } },
   // Remarcar cancela os lembretes na hora antiga (ver `events.ts`) e reagenda o lembrete na nova.
   { event: "appointment.rescheduled", action: "schedule_reminder", config: { template: "reminder_24h", hoursBefore: 24 } },
-  { event: "appointment.completed", action: "schedule_reminder", config: { template: "post_visit", delayMinutes: 30 } },
+  // Pós-atendimento sai junto com a conclusão do serviço. Era 30 min de espera e o cliente
+  // (e o operador) ficavam sem o agradecimento justamente na hora do caixa.
+  { event: "appointment.completed", action: "schedule_reminder", config: { template: "post_visit", delayMinutes: 0 } },
 ];
 
 /** Provisiona uma nova barbearia com padrões sensatos. */

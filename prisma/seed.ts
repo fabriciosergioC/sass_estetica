@@ -156,7 +156,7 @@ async function main() {
         { event: "appointment.cancelled", action: "send_whatsapp", config: { template: "cancellation" } },
         { event: "appointment.rescheduled", action: "send_whatsapp", config: { template: "reschedule" } },
         { event: "appointment.created", action: "schedule_reminder", config: { template: "reminder_24h", hoursBefore: 24 } },
-        { event: "appointment.completed", action: "schedule_reminder", config: { template: "post_visit", delayMinutes: 30 } },
+        { event: "appointment.completed", action: "schedule_reminder", config: { template: "post_visit", delayMinutes: 0 } },
         { event: "appointment.no_show", action: "notify_admin", config: { title: "Falta registrada" } },
         { event: "slot.opened", action: "create_opportunity", config: {} },
       ].map((r) => ({ ...r, orgId: org.id, config: JSON.stringify(r.config) })),
