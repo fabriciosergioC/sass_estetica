@@ -22,6 +22,7 @@ export default async function AgendamentoClientePage() {
       state: true,
       instagram: true,
       phone: true,
+      whatsapp: true,
       status: true
     }
   });
@@ -41,6 +42,7 @@ export default async function AgendamentoClientePage() {
           state: org.state,
           instagram: org.instagram,
           phone: org.phone,
+          whatsapp: org.whatsapp,
         }}
       />
     </div>

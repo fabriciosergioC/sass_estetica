@@ -44,6 +44,9 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ slu
         state: org.state,
         instagram: org.instagram,
         phone: org.phone,
+        // A tela de agendamento do cliente (projeto agendamento-cliente) mostra o botão
+        // "Falar no WhatsApp" a partir daqui.
+        whatsapp: org.whatsapp,
       },
       services,
       barbers: barbers.map((b) => ({ ...b, serviceIds: b.services.map((s) => s.serviceId) })),

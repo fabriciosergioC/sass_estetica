@@ -67,6 +67,7 @@ export default async function PublicBarbeariaPage({ params }: { params: Promise<
           state: org.state,
           instagram: org.instagram,
           phone: org.phone,
+          whatsapp: org.whatsapp,
         }}
       />
     </div>

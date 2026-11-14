@@ -34,6 +34,15 @@ type Hour = {
 
 const WEEKDAYS = ["Domingo", "Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado"];
 
+/** Aceita URL completa ou "@perfil" e devolve o link clicável do Instagram. */
+function instagramHref(value: string | null): string | null {
+  const raw = value?.trim();
+  if (!raw) return null;
+  if (/^https?:\/\//i.test(raw)) return raw;
+  const handle = raw.replace(/^@/, "").replace(/\s+/g, "");
+  return handle ? `https://www.instagram.com/${handle}` : null;
+}
+
 export default function ConfiguracoesPage() {
   const [org, setOrg] = useState<Organization | null>(null);
   const [plan, setPlan] = useState<Plan>(null);
@@ -138,6 +147,8 @@ export default function ConfiguracoesPage() {
     );
   }
 
+  const instagramLink = instagramHref(org.instagram);
+
   return (
     <div className="mx-auto max-w-3xl space-y-6">
       <header>
@@ -171,12 +182,25 @@ export default function ConfiguracoesPage() {
               onChange={(e) => setOrg({ ...org, whatsapp: e.target.value || null })}
             />
           </Field>
-          <Field label="Instagram">
-            <Input
-              value={org.instagram ?? ""}
-              onChange={(e) => setOrg({ ...org, instagram: e.target.value || null })}
-            />
-          </Field>
+          <div className="space-y-1.5">
+            <Field label="Instagram">
+              <Input
+                value={org.instagram ?? ""}
+                onChange={(e) => setOrg({ ...org, instagram: e.target.value || null })}
+                placeholder="https://www.instagram.com/sua_clinica/"
+              />
+            </Field>
+            {instagramLink && (
+              <a
+                href={instagramLink}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 pl-1 text-xs font-medium text-gold-400 hover:text-gold-300 hover:underline"
+              >
+                Abrir perfil no Instagram ↗
+              </a>
+            )}
+          </div>
           <Field label="Cor principal" hint="Formato #rrggbb">
             <div className="flex gap-2">
               <input
