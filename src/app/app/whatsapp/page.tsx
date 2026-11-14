@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Badge, Button, Card, EmptyState, Field, Input, Select, Textarea } from "@/components/ui";
 import { toast } from "@/components/toast";
 import { WhatsAppConnectionPanel } from "@/components/whatsapp/connection-panel";
+import { StuckQueuePanel } from "@/components/whatsapp/stuck-queue-panel";
 
 import {
   CONNECTION_LABEL,
@@ -442,9 +443,7 @@ export default function WhatsAppInboxPage() {
       {/* Indicadores do módulo (§20). Vêm do mesmo /metrics que o painel usa; nada é
           calculado no navegador para não discordar do banco. */}
       {metrics && (
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
-          <Kpi label="Recebidas hoje" value={metrics.receivedToday} />
-          <Kpi label="Enviadas hoje" value={metrics.sentToday} />
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-2 lg:grid-cols-4">
           <Kpi label="Aguardando resposta" value={metrics.openConversations} tone={metrics.openConversations > 0 ? "amber" : undefined} />
           <Kpi
             label="Leads que responderam"
@@ -719,6 +718,8 @@ export default function WhatsAppInboxPage() {
           )}
         </Card>
       </div>
+
+      <StuckQueuePanel />
 
       <WhatsAppConnectionPanel realtime={realtime} onConnection={(v) => setConnected(v.state === "CONNECTED")} />
     </div>
