@@ -5,6 +5,7 @@ import { jsonOk, handleApiError } from "@/lib/api";
 import { requirePermission } from "@/lib/auth/guards";
 import { normalizePhone, phoneKey } from "@/lib/phone";
 import { findCustomerByPhone, phoneConflictMessage } from "@/modules/crm/customers";
+import { linkWhatsAppToCustomer } from "@/modules/whatsapp/inbox";
 
 const updateSchema = z.object({
   name: z.string().min(2).max(80).optional(),
@@ -82,6 +83,14 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
       });
       return updated;
     });
+
+    // Telefone corrigido/trocado: o histórico de WhatsApp que estava órfão naquele número
+    // passa a pertencer a esta ficha (e a conversa volta a aparecer no painel).
+    if (body.phone) {
+      await linkWhatsAppToCustomer(orgId, customer).catch((err) => {
+        console.error("[WhatsApp] Falha ao ligar histórico ao cliente editado:", err);
+      });
+    }
 
     return jsonOk({ customer });
   } catch (err) {

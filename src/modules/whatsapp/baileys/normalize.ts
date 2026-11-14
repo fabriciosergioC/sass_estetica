@@ -93,6 +93,22 @@ export function typeFromMessage(message: proto.IWebMessageInfo): {
 }
 
 /**
+ * JID que nunca representa um cliente do sistema.
+ *
+ * `status@broadcast` é atualização de Status (o "stories" do WhatsApp) e chegava ao painel como
+ * se fosse conversa de uma pessoa; `@g.us` é grupo; `@newsletter` é canal. Nenhum deles tem
+ * telefone nem ficha no CRM — persistir isso só enchia a lista de conversa fantasma.
+ */
+export function isNonClientJid(jid: string): boolean {
+  return (
+    jid === "status@broadcast" ||
+    jid.endsWith("@broadcast") ||
+    jid.endsWith("@g.us") ||
+    jid.endsWith("@newsletter")
+  );
+}
+
+/**
  * Mensagem do WhatsApp Web → evento normalizado.
  *
  * `@lid` é tratado com cuidado deliberado: desde a migração para usernames, contatos fora
@@ -108,6 +124,9 @@ export function typeFromMessage(message: proto.IWebMessageInfo): {
 export function normalizeWebMessage(message: proto.IWebMessageInfo): NormalizedMessage | null {
   const jid = message.key?.remoteJid;
   if (!jid || !message.key?.id) return null;
+  // Status, grupo e canal não são cliente: descartar aqui evita contato/conversa fantasma e
+  // também impede que o status de alguém apareça como mensagem recebida nos indicadores.
+  if (isNonClientJid(jid)) return null;
 
   // Mensagens de protocolo (troca de chaves, edição, exclusão) não são conversa: viravam
   // linhas "[Atualização]" enviadas por engano nos indicadores ("Enviadas hoje"/entrega).

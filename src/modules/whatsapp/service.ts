@@ -1,5 +1,6 @@
 import { db } from "@/lib/db";
 import { toWhatsAppDigits } from "@/lib/phone";
+import { findCustomerByPhone } from "@/modules/crm/customers";
 import { renderTemplate } from "./messages";
 import { WhatsAppAdapterError, FRIENDLY_ERROR, type AdapterContext, type SendTarget } from "./adapter";
 import { getAdapter, isMockEnabled, providerNameForOrg, canonicalProvider } from "./adapters";
@@ -167,7 +168,12 @@ export async function getConnectionView(orgId: string): Promise<ConnectionView> 
 
   const [conn, aggregates] = await Promise.all([
     db.whatsAppConnection.findUnique({ where: { orgId } }),
-    db.whatsAppConversation.aggregate({ where: { orgId, archived: false }, _sum: { unreadCount: true }, _count: true }),
+    db.whatsAppConversation.aggregate({
+      // Mesma regra da lista: só conversa de cliente cadastrado conta para o painel.
+      where: { orgId, archived: false, OR: [{ customerId: { not: null } }, { contact: { customerId: { not: null } } }] },
+      _sum: { unreadCount: true },
+      _count: true,
+    }),
   ]);
 
   return {
@@ -256,13 +262,25 @@ export async function openConversation(
     return { ok: false, friendly: "Informe um número com DDI e DDD (ex.: 5531987707962)." };
   }
 
+  // O painel só lista cliente cadastrado — abrir um chat de número desconhecido criaria uma
+  // conversa que a própria tela esconderia. Além disso, o vínculo feito aqui é o que garante
+  // que a conversa nasça visível.
+  const customer = digits ? await findCustomerByPhone(orgId, digits) : null;
+  if (digits && !customer) {
+    return {
+      ok: false,
+      friendly:
+        "Este número ainda não é um cliente cadastrado. Cadastre-o no menu Clientes (ou pela Agenda) para abrir a conversa.",
+    };
+  }
+
   const jid = target.jid?.trim() || `${digits}@s.whatsapp.net`;
   const { contact, conversation } = await ensureConversationForTarget({
     orgId,
     jid,
     phone: digits,
-    name: target.name?.trim() || null,
-    customerId: target.customerId ?? null,
+    name: target.name?.trim() || customer?.name || null,
+    customerId: target.customerId ?? customer?.id ?? null,
   });
 
   await logWa({ orgId, event: "conversation.opened", actor: digits ?? contact.jid, status: conversation.id });
@@ -862,7 +880,15 @@ export async function resendMessage(orgId: string, messageId: string): Promise<S
         distinct: ["customerId"],
         select: { customerId: true },
       }),
-      db.whatsAppConversation.count({ where: { orgId, status: { in: ["OPEN", "IN_PROGRESS"] } } }),
+      db.whatsAppConversation.count({
+        where: {
+          orgId,
+          status: { in: ["OPEN", "IN_PROGRESS"] },
+          // O indicador é do painel: conversa de número não cadastrado está fora da lista,
+          // então também não pode inflar "Aguardando resposta".
+          OR: [{ customerId: { not: null } }, { contact: { customerId: { not: null } } }],
+        },
+      }),
     ]);
 
   return {

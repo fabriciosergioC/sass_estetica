@@ -32,7 +32,15 @@ export async function GET(req: NextRequest) {
         skip,
       }),
       listTeam(orgId),
-      db.whatsAppConversation.aggregate({ where: { orgId, archived: false }, _sum: { unreadCount: true } }),
+      // Só conversa de cliente cadastrado, a mesma regra da lista (a tela não mostra as demais).
+      db.whatsAppConversation.aggregate({
+        where: {
+          orgId,
+          archived: false,
+          OR: [{ customerId: { not: null } }, { contact: { customerId: { not: null } } }],
+        },
+        _sum: { unreadCount: true },
+      }),
     ]);
 
     return jsonOk({

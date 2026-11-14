@@ -6,6 +6,7 @@ import { requirePermission } from "@/lib/auth/guards";
 import { normalizePhone, phoneKey } from "@/lib/phone";
 import { containsCI } from "@/lib/search";
 import { findCustomerByPhone, phoneConflictMessage } from "@/modules/crm/customers";
+import { linkWhatsAppToCustomer } from "@/modules/whatsapp/inbox";
 
 const createSchema = z.object({
   name: z.string().min(2).max(80),
@@ -105,6 +106,12 @@ export async function POST(req: NextRequest) {
         notes: body.notes,
         whatsappOptIn: body.whatsappOptIn,
       },
+    });
+
+    // A pessoa pode ter mandado mensagem antes de existir como cliente; agora que a ficha
+    // existe, o histórico dela passa a aparecer no painel do WhatsApp (que só lista clientes).
+    await linkWhatsAppToCustomer(orgId, customer).catch((err) => {
+      console.error("[WhatsApp] Falha ao ligar histórico ao cliente recém-cadastrado:", err);
     });
 
     return jsonOk({ customer }, 201);

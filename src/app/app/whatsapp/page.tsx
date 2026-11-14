@@ -464,7 +464,7 @@ export default function WhatsAppInboxPage() {
         <Card className="p-4">
           <div className="flex flex-wrap items-end gap-3">
             <div className="min-w-56 flex-1">
-              <Field label="Número do WhatsApp" hint="Com DDI + DDD. O contato é criado sozinho se ainda não existir.">
+              <Field label="Número do WhatsApp" hint="Precisa ser de um cliente já cadastrado no menu Clientes (ou pela Agenda).">
                 <Input placeholder="5531987707962" onChange={(e) => (newPhone.current = e.target.value)} />
               </Field>
             </div>
@@ -511,7 +511,7 @@ export default function WhatsAppInboxPage() {
                 <EmptyState
                   icon="💬"
                   title="Nenhuma conversa aqui"
-                  description="As conversas aparecem quando alguém manda mensagem para o número conectado, ou quando você abre uma pelo botão Nova conversa."
+                  description="Só aparecem conversas de clientes cadastrados. Cadastre o cliente no menu Clientes (ou pela Agenda) e o histórico dele aparece aqui."
                 />
               </div>
             ) : (

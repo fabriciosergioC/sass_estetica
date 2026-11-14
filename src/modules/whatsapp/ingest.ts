@@ -1,5 +1,6 @@
 import { db, type PrismaClientOrTx } from "@/lib/db";
 import { whatsappPhoneVariants } from "@/lib/phone";
+import { findCustomerByPhone } from "@/modules/crm/customers";
 import { sendTemplateMessage } from "./messages";
 import {
   canAdvanceStatus,
@@ -232,10 +233,9 @@ async function tentarUpsertContact(opts: {
 
   let customerId = existing?.customerId ?? null;
   if (!customerId && message.phone) {
-    const customer = await db.customer.findFirst({
-      where: { orgId, phone: message.phone },
-      select: { id: true },
-    });
+    // Comparação por dígitos (`phoneKey`): o CRM grava `+31987707962` e o WhatsApp manda
+    // `5531987707962` — igualdade de string não acharia o cliente já cadastrado.
+    const customer = await findCustomerByPhone(orgId, message.phone);
     customerId = customer?.id ?? null;
   }
 
@@ -301,39 +301,21 @@ async function upsertContact(opts: Parameters<typeof tentarUpsertContact>[0]) {
 }
 
 /**
- * Customer (cadastro do CRM) criado a partir de um número real que mandou mensagem.
- * Mantém o comportamento que já existia — barbeiro precisa do cliente no cadastro para
- * agendar — e é por isso que só rodamos com `masked=false` e telefone confirmado.
+ * Customer (cadastro do CRM) procurado pelo telefone de quem mandou a mensagem.
+ *
+ * Só procura — NÃO cria. Antes, qualquer número que mandasse "oi" virava cliente automático
+ * (com o nome do perfil do WhatsApp), o que enchia o menu Clientes de spam e colocava números
+ * desconhecidos no painel de conversas. A regra do produto agora é a inversa: mensagem de
+ * número não cadastrado continua gravada, mas a conversa só aparece depois que o cliente
+ * existir no CRM; o cadastro feito em Clientes/Agenda chama `linkWhatsAppToCustomer` e liga
+ * o histórico sozinho.
  */
-async function ensureCustomer(opts: { orgId: string; message: NormalizedMessage; name: string | null }) {
+async function findCustomerForIncoming(opts: { orgId: string; message: NormalizedMessage }) {
   const { orgId, message } = opts;
   if (message.masked || !message.phone) return null;
 
-  const found = await db.customer.findFirst({ where: { orgId, phone: message.phone }, select: { id: true } });
-  if (found) return found.id;
-
-  try {
-    const created = await db.customer.create({
-      data: {
-        orgId,
-        name: opts.name ?? `Cliente ${message.phone.slice(-4)}`,
-        phone: message.phone,
-        // Consentimento: o cliente falou primeiro, então o canal está liberado (§25).
-        whatsappOptIn: true,
-      },
-    });
-    return created.id;
-  } catch (err) {
-    // Outra mensagem do mesmo número criou a ficha entre a nossa leitura e a nossa escrita
-    // (`@@unique([orgId, phone])`): a linha que já está lá é exatamente a que queríamos.
-    if ((err as { code?: string }).code !== "P2002") throw err;
-    const criadaPorOutra = await db.customer.findFirst({
-      where: { orgId, phone: message.phone },
-      select: { id: true },
-    });
-    if (!criadaPorOutra) throw err;
-    return criadaPorOutra.id;
-  }
+  const found = await findCustomerByPhone(orgId, message.phone);
+  return found?.id ?? null;
 }
 
 async function tentarUpsertConversation(opts: {
@@ -421,7 +403,7 @@ export async function tentarEnsureConversationForTarget(opts: {
 
   let customerId = opts.customerId ?? existing?.customerId ?? null;
   if (!customerId && opts.phone) {
-    const customer = await db.customer.findFirst({ where: { orgId, phone: opts.phone }, select: { id: true } });
+    const customer = await findCustomerByPhone(orgId, opts.phone);
     customerId = customer?.id ?? null;
   }
 
@@ -627,10 +609,13 @@ export async function ingestMessage(orgId: string, message: NormalizedMessage, t
     message,
   });
 
-  // Link com o CRM pode nascer depois: contato mascarado que um dia ganhou telefone.
+  // Link com o CRM pode nascer depois: contato mascarado que um dia ganhou telefone, ou
+  // cliente cadastrado em Clientes/Agenda depois da primeira mensagem (o cadastro chama
+  // `linkWhatsAppToCustomer`). Aqui só aproveitamos a ficha que já existe — número novo não
+  // vira Customer sozinho, senão o menu Clientes volta a encher de contato desconhecido.
   let linked = customerId;
-  if (!linked && !message.masked && message.phone) {
-    linked = (await ensureCustomer({ orgId, message, name: message.pushName ?? contact.name })) ?? null;
+  if (!linked) {
+    linked = await findCustomerForIncoming({ orgId, message });
     if (linked && !contact.customerId) {
       await db.whatsAppContact.update({ where: { id: contact.id }, data: { customerId: linked } });
     }
