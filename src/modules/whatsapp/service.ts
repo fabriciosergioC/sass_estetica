@@ -660,6 +660,11 @@ export async function sendMessage(input: SendInput): Promise<SendOutcome> {
   const adapter = getAdapter(await providerNameForOrg(orgId));
   const target: SendTarget = { phone: digits, jid };
 
+  // Carimbo da TENTATIVA (não da entrega): é o que espaça o próximo envio e conta a janela
+  // de 60/h da fila. `sentAt` só é gravado quando o provedor confirma — enquanto fica
+  // PENDING, ou quando falha, ele continua nulo e a fila não enxergava o envio recente.
+  await db.whatsAppMessage.update({ where: { id: message.id }, data: { lastAttemptAt: new Date() } });
+
   let result: AdapterSendResult;
   try {
     result = input.media

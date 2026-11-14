@@ -611,6 +611,9 @@ model WhatsAppMessage {
   providerMsgId String?
   error         String?
   sentAt        DateTime?
+  /// Última TENTATIVA de envio (aceita ou não). `sentAt` só existe quando o provedor confirma,
+  /// então não serve para espaçar a fila nem para a janela de 60/h — ver queue.ts.
+  lastAttemptAt DateTime?
   deliveredAt   DateTime?
   readAt        DateTime?
   createdAt     DateTime @default(now())
@@ -628,6 +631,7 @@ model WhatsAppMessage {
   media       WhatsAppMedia[]
 
   @@index([orgId, status])
+  @@index([orgId, lastAttemptAt])
   @@index([orgId, phone, createdAt])
   @@index([orgId, conversationId, createdAt])
   @@index([providerMsgId])

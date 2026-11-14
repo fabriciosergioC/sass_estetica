@@ -44,14 +44,29 @@ export async function enqueueJob(opts: {
     if ((err as { code?: string }).code !== "P2002") throw err;
     return { created: false };
   }
-  // Processa o mais cedo possível fora do caminho da requisição.
-  // Jobs com runAt futuro só rodam via /api/cron.
+  // Processa o mais cedo possível fora do caminho da requisição. O job pode estar alguns
+  // segundos no futuro (espaçamento da fila do WhatsApp), então não basta rodar agora:
+  // acordar o worker faz ele recalcular o próximo vencimento e dormir só até lá. Era aqui
+  // que um runAt +3s esperava o ciclo fixo de 60s.
   try {
-    after(() => processJobs().catch(() => 0));
+    after(async () => {
+      const { wakeJobWorker } = await import("./worker");
+      wakeJobWorker();
+    });
   } catch {
     // fora de contexto de requisição (ex: seed/cron) — o chamador processa
   }
   return { created: true };
+}
+
+/** Menor `runAt` ainda pendente. O worker usa para dormir até o próximo vencimento. */
+export async function nextPendingRunAt(): Promise<Date | null> {
+  const job = await db.job.findFirst({
+    where: { status: "PENDING" },
+    orderBy: { runAt: "asc" },
+    select: { runAt: true },
+  });
+  return job?.runAt ?? null;
 }
 
 type JobRunResult = { deferred?: boolean; error?: string; retryAt?: Date } | void;

@@ -31,7 +31,7 @@ export const STUCK_PROCESSING_MS = 15 * 60_000;
 export const STUCK_WINDOW_MS = 7 * 24 * 60 * 60_000;
 
 /** Pistas de que o job está parado esperando algo (pausa/queda), não agendado para depois. */
-const DEFERRED_HINT = /pausad|desconect|indispon|aguardando|reconect|offline/i;
+const DEFERRED_HINT = /pausad|desconect|indispon|aguardando|reconect|offline|limite/i;
 
 const messageSelect = {
   id: true,
@@ -180,11 +180,16 @@ function classifyQueued(job: SendJobRow | undefined, now: number) {
 
   const ahead = job.runAt.getTime() > now + SCHEDULED_AHEAD_MS;
   const deferred = DEFERRED_HINT.test(job.lastError ?? "");
-  if (ahead && !deferred) {
+  // "Agendada" é só o job que nasceu para uma hora futura. Se ele já tem erro, está em
+  // janela de nova tentativa (pausa, limite por hora, queda) — chamar isso de "agendada"
+  // fazia o painel parecer que a mensagem estava esperando a hora de propósito.
+  if (ahead && !deferred && !job.lastError) {
     return {
       situation: "scheduled" as const,
       retryable: false,
-      note: `Agendada para ${job.runAt.toLocaleString("pt-BR")}.`,
+      // O servidor roda em UTC: formatar aqui sem fuso mostrava 15:45 para quem lia 12:45
+      // no relógio de São Paulo. A clínica opera no fuso da loja.
+      note: `Agendada para ${job.runAt.toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" })}.`,
     };
   }
   if (job.runAt.getTime() < now - OVERDUE_MS) {

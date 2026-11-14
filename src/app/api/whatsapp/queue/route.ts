@@ -2,7 +2,7 @@ import { NextRequest } from "next/server";
 import { z } from "zod";
 import { jsonOk, handleApiError } from "@/lib/api";
 import { requirePermission } from "@/lib/auth/guards";
-import { QUEUE_LIMITS, pauseInfo, queueDepth, resumeSending, pauseSending, forceDueQueuedSends } from "@/modules/whatsapp/queue";
+import { QUEUE_LIMITS, pauseInfo, queueDepth, resumeSending, pauseSending, forceDueQueuedSends, pullForwardPausedSends } from "@/modules/whatsapp/queue";
 import { db } from "@/lib/db";
 
 /**
@@ -49,7 +49,12 @@ export async function POST(req: NextRequest) {
 
     if (body.action === "resume") {
       await resumeSending(orgId, session.userId);
-      return jsonOk({ ...(await queueDepth(orgId)), limits: QUEUE_LIMITS });
+      // Os jobs pausados estavam com runAt no fim da pausa (até 15 min à frente). Retomar sem
+      // puxá-los de volta não adiantava nada — a fila só voltava no horário previsto.
+      const pulled = await pullForwardPausedSends(orgId);
+      const { wakeJobWorker } = await import("@/modules/automation/worker");
+      wakeJobWorker();
+      return jsonOk({ ...(await queueDepth(orgId)), limits: QUEUE_LIMITS, pulled });
     }
 
     // "Forçar": tenta agora o que está preso em QUEUED (sem job, job vencido ou reprogramado

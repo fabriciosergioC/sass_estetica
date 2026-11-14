@@ -3,7 +3,6 @@ import { z } from "zod";
 import { jsonOk, handleApiError } from "@/lib/api";
 import { requirePermission } from "@/lib/auth/guards";
 import { db } from "@/lib/db";
-import { processJobs } from "@/modules/automation/jobs";
 import {
   listStuckSends,
   requeueStuckProcessing,
@@ -105,12 +104,17 @@ export async function POST(req: NextRequest) {
     }
 
     // O enfileiramento não espera o worker; aqui só damos o empurrão inicial para o primeiro
-    // item sair logo. Os demais seguem a escada de `runAt` normalmente.
+    // item sair logo. Os demais seguem a escada de `runAt` normalmente. Acordar (em vez de
+    // rodar um lote fixo) faz o agendador dormir só até o próximo vencimento — os itens
+    // reenviados não esperam mais o tique longo de segurança.
     if (kickWorker) {
       try {
-        after(() => processJobs(25).catch(() => 0));
+        after(async () => {
+          const { wakeJobWorker } = await import("@/modules/automation/worker");
+          wakeJobWorker();
+        });
       } catch {
-        // fora de contexto de requisição: o worker de 60s pega no próximo ciclo
+        // fora de contexto de requisição: o agendador pega no próximo vencimento
       }
     }
 

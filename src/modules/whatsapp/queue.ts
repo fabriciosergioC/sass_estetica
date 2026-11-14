@@ -151,13 +151,20 @@ export async function assertSendAllowed(
   // Só conta o que REALMENTE saiu (PENDING/SENT/DELIVERED/READ). Contar QUEUED/CANCELLED
   // transformava um backlog aguardando reconexão em "limite por hora atingido", travando
   // a fila justamente quando ela precisava escoar.
+  //
+  // A janela é do MOMENTO DA TENTATIVA, não da criação da linha. Com `createdAt`, um backlog
+  // criado há 2h escoava sem contar no teto — e a fila podia passar de 60/h sem ninguém ver.
+  // Linhas antigas (sem `lastAttemptAt`) mantêm o comportamento anterior como fallback.
   if (!ignore.rateLimit) {
     const sentLastHour = await db.whatsAppMessage.count({
       where: {
         orgId,
         direction: "OUT",
-        createdAt: { gte: since },
         status: { in: ["PENDING", "SENT", "DELIVERED", "READ"] },
+        OR: [
+          { lastAttemptAt: { gte: since } },
+          { lastAttemptAt: null, createdAt: { gte: since } },
+        ],
       },
     });
     if (sentLastHour >= QUEUE_LIMITS.perHour) {
@@ -173,18 +180,38 @@ export async function assertSendAllowed(
 }
 
 /**
+ * Instante da última TENTATIVA de envio da org (aceita ou não).
+ *
+ * `sentAt` só é gravado quando o provedor confirma; enquanto a mensagem fica PENDING, ou
+ * quando falha, ele continua nulo. Usar só `sentAt` fazia o espaçamento e o teto por hora
+ * enxergarem "nenhum envio recente" e liberarem a fila em rajada. `lastAttemptAt` cobre
+ * esses casos; `sentAt` fica como fallback para o histórico anterior à coluna.
+ */
+async function lastSendAttemptAt(orgId: string): Promise<number> {
+  const [attempt, sent] = await Promise.all([
+    db.whatsAppMessage.findFirst({
+      where: { orgId, direction: "OUT", lastAttemptAt: { not: null } },
+      orderBy: { lastAttemptAt: "desc" },
+      select: { lastAttemptAt: true },
+    }),
+    db.whatsAppMessage.findFirst({
+      where: { orgId, direction: "OUT", sentAt: { not: null } },
+      orderBy: { sentAt: "desc" },
+      select: { sentAt: true },
+    }),
+  ]);
+  return Math.max(attempt?.lastAttemptAt?.getTime() ?? 0, sent?.sentAt?.getTime() ?? 0);
+}
+
+/**
  * Coloca a mensagem na fila persistida (`Job`), já espaçada.
  * `runAt` vem do último envio + intervalo, então campanhas grandes viram uma escada em vez
  * de um pico — que é o que faz conta ser banida.
  */
 export async function queueSendMessage(opts: { orgId: string; messageId: string; runAt?: Date; dedupeKey?: string }): Promise<void> {
-  const lastSend = await db.whatsAppMessage.findFirst({
-    where: { orgId: opts.orgId, direction: "OUT", sentAt: { not: null } },
-    orderBy: { sentAt: "desc" },
-    select: { sentAt: true },
-  });
+  const lastAttempt = await lastSendAttemptAt(opts.orgId);
 
-  const earliest = lastSend?.sentAt ? new Date(lastSend.sentAt.getTime() + QUEUE_LIMITS.intervalMs) : new Date();
+  const earliest = lastAttempt > 0 ? new Date(lastAttempt + QUEUE_LIMITS.intervalMs) : new Date();
   const runAt = opts.runAt && opts.runAt > earliest ? opts.runAt : earliest;
 
   const dedupeKey = opts.dedupeKey ?? `wa:${opts.messageId}`;
@@ -214,6 +241,28 @@ export async function queueDepth(orgId: string) {
     pauseInfo(orgId),
   ]);
   return { messages: queued, jobs, paused: pause.paused, until: pause.until, reason: pause.reason };
+}
+
+/**
+ * Ao retomar a fila, traz para "agora" os envios que estavam esperando o fim da pausa.
+ *
+ * Quando a pausa é aplicada, o job é reprogramado para `until + 5s` — se a pausa era de
+ * 15 minutos, retomar manualmente não adiantava nada: o job continuava dormindo até o fim
+ * previsto. Aqui o `runAt` volta para agora; o espaçamento e o teto por hora continuam
+ * valendo na execução.
+ */
+export async function pullForwardPausedSends(orgId: string): Promise<number> {
+  const { count } = await db.job.updateMany({
+    where: {
+      orgId,
+      type: "send_whatsapp",
+      status: "PENDING",
+      runAt: { gt: new Date() },
+      lastError: { contains: "pausad" },
+    },
+    data: { runAt: new Date(), lastError: null },
+  });
+  return count;
 }
 
 /**
@@ -247,6 +296,21 @@ export async function runQueuedSend(orgId: string, messageId: string): Promise<Q
       error: `Envios pausados até ${pause.until}. ${pause.reason ?? ""}`.trim(),
       deferred: true,
       retryAt: pause.until ? new Date(new Date(pause.until).getTime() + 5_000) : undefined,
+    };
+  }
+
+  // Espaçamento em TEMPO DE EXECUÇÃO. O worker pega vários jobs vencidos de uma vez; antes,
+  // o intervalo só era aplicado ao criar o job e 25 mensagens saíam em rajada. Devolver como
+  // `deferred` não consome tentativa: é espera, não falha.
+  const lastAttempt = await lastSendAttemptAt(orgId);
+  const nextAllowedAt = lastAttempt + QUEUE_LIMITS.intervalMs;
+  if (lastAttempt > 0 && Date.now() < nextAllowedAt) {
+    return {
+      ok: false,
+      status: "QUEUED",
+      error: `Aguardando o intervalo de ${QUEUE_LIMITS.intervalMs / 1000}s entre envios.`,
+      deferred: true,
+      retryAt: new Date(nextAllowedAt),
     };
   }
 
@@ -392,7 +456,7 @@ export type ForceQueueResult = {
 };
 
 /** Pistas de que o job está parado esperando algo (pausa/queda), não agendado para depois. */
-const DEFERRED_HINT = /pausad|desconect|indispon|aguardando|reconect|offline/i;
+const DEFERRED_HINT = /pausad|desconect|indispon|aguardando|reconect|offline|limite/i;
 
 /**
  * "Forçar envios parados": um clique explícito do painel para tirar da inércia o que está
