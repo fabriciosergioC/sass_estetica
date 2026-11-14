@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Button, Card, EmptyState, Badge, Textarea, Field, Input, Select } from "@/components/ui";
 import { Dialog } from "@/components/dialog";
 import { toast } from "@/components/toast";
-import { formatPhone } from "@/lib/format";
+import { formatPhone, STATUS_META } from "@/lib/format";
 import { isFixedNoticeRule, isLegacyConfirmedReminder } from "@/modules/automation/rules";
 
 type Rule = {
@@ -51,6 +51,39 @@ type DispatchTarget = {
   templateKey?: string;
   ruleId?: string;
 };
+
+type AppointmentOption = {
+  id: string;
+  startAt: string;
+  status: string;
+  service?: { name: string } | null;
+  barber?: { name: string } | null;
+};
+
+/**
+ * Rótulo do atendimento no seletor do disparo manual. O horário é exibido no fuso da loja,
+ * igual às mensagens (`formatDateTimeBR` no servidor), para o operador ver exatamente a
+ * data/hora que vai sair no WhatsApp.
+ */
+function appointmentOptionLabel(appt: AppointmentOption): string {
+  const d = new Date(appt.startAt);
+  const date = new Intl.DateTimeFormat("pt-BR", {
+    timeZone: "America/Sao_Paulo",
+    day: "2-digit",
+    month: "2-digit",
+    year: "2-digit",
+  }).format(d);
+  const time = new Intl.DateTimeFormat("pt-BR", {
+    timeZone: "America/Sao_Paulo",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).format(d);
+  const status = STATUS_META[appt.status]?.label ?? appt.status;
+  const servico = appt.service?.name ? ` · ${appt.service.name}` : "";
+  const barbeiro = appt.barber?.name ? ` com ${appt.barber.name}` : "";
+  return `${date} às ${time}${servico}${barbeiro} · ${status}`;
+}
 
 export default function AutomacoesPage() {
   const [rules, setRules] = useState<Rule[]>([]);
@@ -427,6 +460,13 @@ function ManualDispatchDialog({
   const [customers, setCustomers] = useState<Array<{ id: string; name: string; phone: string; whatsappOptIn: boolean }>>([]);
   const [selectedCustomer, setSelectedCustomer] = useState<{ id: string; name: string; phone: string; whatsappOptIn: boolean } | null>(null);
   const [searching, setSearching] = useState(false);
+  // Atendimento de referência: quando escolhido, {{data}}, {{hora}}, {{servico}} e {{barbeiro}}
+  // saem deste agendamento (e a deduplicação é por ele). Vazio = comportamento antigo (último
+  // atendimento do cliente, escolhido pela API).
+  const [appointments, setAppointments] = useState<AppointmentOption[]>([]);
+  const [loadingAppointments, setLoadingAppointments] = useState(false);
+  const [appointmentsFailed, setAppointmentsFailed] = useState(false);
+  const [selectedAppointmentId, setSelectedAppointmentId] = useState("");
   const [customBody, setCustomBody] = useState("");
   const [sending, setSending] = useState(false);
 
@@ -435,6 +475,8 @@ function ManualDispatchDialog({
       setSelectedCustomer(null);
       setCustomerQuery("");
       setCustomers([]);
+      setAppointments([]);
+      setSelectedAppointmentId("");
       return;
     }
     const key = initialTemplateKey || templates[0]?.key || "";
@@ -466,6 +508,44 @@ function ManualDispatchDialog({
     return () => clearTimeout(timeout);
   }, [customerQuery, open]);
 
+  // Agendamentos do cliente escolhido, do mais recente para o mais antigo. Mostra os 12 últimos
+  // porque o objetivo é referenciar um atendimento específico — a lista inteira viraria um
+  // seletor gigante para clientes antigos.
+  useEffect(() => {
+    setSelectedAppointmentId("");
+    setAppointmentsFailed(false);
+    if (!open || !selectedCustomer) {
+      setAppointments([]);
+      return;
+    }
+    let cancelled = false;
+    setLoadingAppointments(true);
+    fetch(`/api/appointments?customerId=${encodeURIComponent(selectedCustomer.id)}`)
+      .then(async (res) => {
+        if (!res.ok) throw new Error("falha ao carregar agendamentos");
+        return res.json();
+      })
+      .then((data) => {
+        if (cancelled) return;
+        const items = ((data.items ?? []) as AppointmentOption[])
+          .slice()
+          .sort((a, b) => new Date(b.startAt).getTime() - new Date(a.startAt).getTime())
+          .slice(0, 12);
+        setAppointments(items);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setAppointments([]);
+        setAppointmentsFailed(true);
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingAppointments(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, selectedCustomer]);
+
   async function handleSend() {
     if (!selectedCustomer) {
       toast("Selecione um cliente para disparar.", "error");
@@ -485,6 +565,7 @@ function ManualDispatchDialog({
           customerId: selectedCustomer.id,
           templateKey: selectedKey,
           ruleId: initialRuleId,
+          appointmentId: selectedAppointmentId || undefined,
           customBody,
         }),
       });
@@ -594,7 +675,37 @@ function ManualDispatchDialog({
           )}
         </div>
 
-        {/* 3. Texto da Mensagem */}
+        {/* 3. Atendimento de referência (define {{data}}, {{hora}}, {{servico}} e {{barbeiro}}) */}
+        <div className="space-y-1.5">
+          <label className="block text-xs font-medium uppercase tracking-wide text-zinc-400">
+            Atendimento de referência
+          </label>
+          {loadingAppointments ? (
+            <p className="text-xs text-zinc-500">Carregando agendamentos do cliente...</p>
+          ) : (
+            <Select
+              value={selectedAppointmentId}
+              onChange={(e) => setSelectedAppointmentId(e.target.value)}
+              disabled={!selectedCustomer}
+            >
+              <option value="">Automático (último atendimento do cliente)</option>
+              {appointments.map((appt) => (
+                <option key={appt.id} value={appt.id}>
+                  {appointmentOptionLabel(appt)}
+                </option>
+              ))}
+            </Select>
+          )}
+          <p className="text-xs text-zinc-500">
+            {appointmentsFailed
+              ? "Não foi possível carregar os agendamentos. O disparo usará o último atendimento do cliente."
+              : selectedCustomer && appointments.length === 0
+                ? "Este cliente não tem agendamentos — as variáveis de data/hora sairão vazias."
+                : "A data, a hora, o serviço e o barbeiro da mensagem saem do atendimento escolhido aqui."}
+          </p>
+        </div>
+
+        {/* 4. Texto da Mensagem */}
         <Field
           label="Texto da mensagem"
           hint="Variáveis como {{cliente}}, {{barbearia}}, {{servico}}, {{barbeiro}}, {{data}} e {{hora}} são substituídas automaticamente."
@@ -607,7 +718,7 @@ function ManualDispatchDialog({
           />
         </Field>
 
-        {/* 4. Ações */}
+        {/* 5. Ações */}
         <div className="flex items-center justify-end gap-3 border-t border-zinc-800 pt-3">
           <Button variant="ghost" onClick={onClose} disabled={sending}>
             Cancelar

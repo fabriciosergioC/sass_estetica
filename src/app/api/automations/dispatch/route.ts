@@ -63,10 +63,13 @@ export async function POST(req: NextRequest) {
       return jsonOk({ error: "Texto da mensagem não informado ou template inexistente." }, 400);
     }
 
-    // 3. Busca agendamento recente para preencher variáveis adicionais (servico, barbeiro, data, hora)
+    // 3. Busca o atendimento de referência (escolhido no painel) ou, sem ele, o mais recente
+    // do cliente. O `customerId` no filtro impede que um id de outro cliente (tela aberta há
+    // muito tempo, troca de cliente sem recarregar) faça a mensagem sair com a data/hora de
+    // outra pessoa.
     const appt = body.appointmentId
       ? await db.appointment.findFirst({
-          where: { id: body.appointmentId, orgId },
+          where: { id: body.appointmentId, orgId, customerId: customer.id },
           include: { barber: { select: { name: true } }, service: { select: { name: true } } },
         })
       : await db.appointment.findFirst({
