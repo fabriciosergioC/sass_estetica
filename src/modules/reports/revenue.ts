@@ -1,12 +1,15 @@
 import { db } from "@/lib/db";
+import { localDateTime } from "@/lib/datetime";
 import {
   DAY_MS,
   addDays,
   bucketLabel,
   bucketStart,
+  fromKey,
   lastDayOf,
   nextBucket,
   startOfDay,
+  toBusinessKey,
   toKey,
   type Granularity,
 } from "@/lib/period";
@@ -67,33 +70,41 @@ export async function getRevenueReport(opts: {
   const last = addDays(lastInclusive, 1); // exclusive
 
   const spanDays = Math.round((last.getTime() - first.getTime()) / DAY_MS);
-  const previousFrom = new Date(first.getTime() - spanDays * DAY_MS);
+
+  // `paidAt` e `startAt` são INSTANTES. O servidor roda em UTC, então cortar o dia com
+  // `startOfDay` (fuso do processo) mandava o recebimento das 22h de São Paulo para o dia
+  // seguinte: ele sumia do "Por dia" de hoje e só aparecia no balde semanal. As fronteiras
+  // abaixo são a meia-noite de São Paulo, igual à rota de Recebimentos.
+  const rangeStart = localDateTime(toKey(first), "00:00");
+  const rangeEnd = localDateTime(toKey(last), "00:00"); // exclusive: meia-noite do dia seguinte ao `to`
+  const previousFirst = addDays(first, -spanDays);
+  const previousStart = localDateTime(toKey(previousFirst), "00:00");
 
   const [payments, appointments, previousPayments, previousAppointments] = await Promise.all([
     db.payment.findMany({
       where: {
         orgId,
         status: "PAID",
-        paidAt: { gte: first, lt: last },
+        paidAt: { gte: rangeStart, lt: rangeEnd },
         OR: [{ appointmentId: null }, { appointment: { status: { not: "CANCELLED" } } }],
       },
       select: { amountCents: true, paidAt: true },
     }),
     db.appointment.findMany({
-      where: { orgId, status: "COMPLETED", startAt: { gte: first, lt: last } },
+      where: { orgId, status: "COMPLETED", startAt: { gte: rangeStart, lt: rangeEnd } },
       select: { startAt: true },
     }),
     db.payment.findMany({
       where: {
         orgId,
         status: "PAID",
-        paidAt: { gte: previousFrom, lt: first },
+        paidAt: { gte: previousStart, lt: rangeStart },
         OR: [{ appointmentId: null }, { appointment: { status: { not: "CANCELLED" } } }],
       },
       select: { amountCents: true },
     }),
     db.appointment.count({
-      where: { orgId, status: "COMPLETED", startAt: { gte: previousFrom, lt: first } },
+      where: { orgId, status: "COMPLETED", startAt: { gte: previousStart, lt: rangeStart } },
     }),
   ]);
 
@@ -113,7 +124,9 @@ export async function getRevenueReport(opts: {
       ticketMedioCents: 0,
     });
   }
-  const bucketFor = (d: Date): RevenueBucket | undefined => buckets.get(toKey(bucketStart(d, granularity)));
+  // O balde sai do dia da LOJA do instante, nunca do calendário do processo.
+  const bucketFor = (d: Date): RevenueBucket | undefined =>
+    buckets.get(toKey(bucketStart(fromKey(toBusinessKey(d)), granularity)));
 
   let totalFaturamento = 0;
   for (const p of payments) {
@@ -145,7 +158,7 @@ export async function getRevenueReport(opts: {
       ticketMedioCents: totalAtendimentos > 0 ? Math.round(totalFaturamento / totalAtendimentos) : 0,
     },
     previous: {
-      from: toKey(previousFrom),
+      from: toKey(previousFirst),
       to: toKey(addDays(first, -1)),
       faturamentoCents: previousTotal,
       atendimentos: previousAppointments,

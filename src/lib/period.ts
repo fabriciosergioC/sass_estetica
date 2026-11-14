@@ -10,6 +10,9 @@ export type Granularity = "day" | "week" | "month";
 
 export const DAY_MS = 24 * 60 * 60 * 1000;
 
+/** Fuso da loja. O servidor roda em UTC; a barbearia pensa no relógio de São Paulo. */
+export const BUSINESS_TIME_ZONE = "America/Sao_Paulo";
+
 /** Limita o recorte: um relatório de 10 anos de eixo não é o que a tela precisa. */
 export const MAX_RANGE_DAYS = 400;
 
@@ -64,6 +67,23 @@ export function toKey(date: Date): string {
 export function fromKey(key: string): Date {
   const [y, m, d] = key.split("-").map(Number);
   return new Date(y, (m || 1) - 1, d || 1);
+}
+
+/**
+ * `Date` (instante, como `paidAt` ou `startAt` vindo do banco) → `YYYY-MM-DD` no fuso da loja.
+ *
+ * `toKey` lê o calendário do fuso em que o processo roda; num servidor UTC um pagamento às 22h
+ * de São Paulo já cai no dia seguinte. Aqui o recorte é sempre o da loja, onde quer que o
+ * código esteja rodando.
+ */
+export function toBusinessKey(date: Date): string {
+  // en-CA formata nativamente como YYYY-MM-DD.
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: BUSINESS_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(date);
 }
 
 function shortDate(d: Date): string {
