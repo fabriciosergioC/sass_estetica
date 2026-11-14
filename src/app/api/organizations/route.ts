@@ -14,7 +14,9 @@ const patchSchema = z.object({
   address: z.string().max(160).nullable().optional(),
   city: z.string().max(80).nullable().optional(),
   state: z.string().max(2).nullable().optional(),
-  instagram: z.string().max(60).nullable().optional(),
+  // 200 chars porque o "compartilhar perfil" do Instagram gera links com ?igsh=...
+  // que passam fácil de 60 e faziam o "Salvar alterações" falhar inteiro.
+  instagram: z.string().trim().max(200).nullable().optional(),
   description: z.string().max(500).nullable().optional(),
   primaryColor: HEX.optional(),
   timezone: z.string().max(60).optional(),
