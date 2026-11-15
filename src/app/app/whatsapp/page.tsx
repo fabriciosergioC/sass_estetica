@@ -96,19 +96,12 @@ type Thread = {
 
 type QuickReply = { id: string; shortcut: string; title: string | null; body: string };
 
-/** O que /api/whatsapp/metrics devolve; tudo opcional porque a tela continua útil sem número. */
-type PanelMetrics = {
-  receivedToday: number;
-  sentToday: number;
-  openConversations: number;
-  answeredToday: number;
-  contactedToday: number;
-  failed: number;
-  followUpsPending: number;
-  delivery: { successRate: number | null };
-};
+/** Quantidade de conversas em cada aba; vem de /api/whatsapp/metrics (`counts`). */
+type TabCounts = Record<"appointments" | "in_progress" | "waiting" | "done", number>;
 
 const FILTERS = ["all", "appointments", "in_progress", "waiting", "done"];
+/** As abas que ganham cartão no topo (a de "Todas" continua só como chip da lista). */
+const TAB_FILTERS = ["appointments", "in_progress", "waiting", "done"] as const;
 const STATUS_OPTIONS = ["OPEN", "IN_PROGRESS", "WAITING_CUSTOMER", "DONE"];
 
 /** Limite prático do anexo: o data URL viaja no corpo do POST (a rota aceita até ~16 MB de texto). */
@@ -154,8 +147,8 @@ export default function WhatsAppInboxPage() {
 
   const [qrForm, setQrForm] = useState({ shortcut: "", body: "" });
 
-  /* Indicadores do topo (§20). */
-  const [metrics, setMetrics] = useState<PanelMetrics | null>(null);
+  /* Quantidade de conversas em cada aba (topo da tela). */
+  const [tabCounts, setTabCounts] = useState<TabCounts | null>(null);
 
   /* ------------------------------------------------------------------ leitura */
 
@@ -208,21 +201,18 @@ export default function WhatsAppInboxPage() {
     })();
   }, []);
 
-  /** Indicadores do topo (§20). Falhou? A tela segue funcionando sem os números. */
+  /** Quantas conversas há em cada aba. Falhou? A tela segue funcionando sem os números. */
   const loadMetrics = useCallback(async () => {
     const m: Record<string, any> = await fetch("/api/whatsapp/metrics", { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : {}))
       .catch(() => ({}));
-    if (typeof m?.receivedToday !== "number") return;
-    setMetrics({
-      receivedToday: m.receivedToday,
-      sentToday: m.sentToday ?? 0,
-      openConversations: m.openConversations ?? 0,
-      answeredToday: m.answeredToday ?? 0,
-      contactedToday: m.contactedToday ?? 0,
-      failed: m.failed ?? 0,
-      followUpsPending: m.followUpsPending ?? 0,
-      delivery: { successRate: m.delivery?.successRate ?? null },
+    const c = m?.counts;
+    if (!c) return;
+    setTabCounts({
+      appointments: c.appointments ?? 0,
+      in_progress: c.in_progress ?? 0,
+      waiting: c.waiting ?? 0,
+      done: c.done ?? 0,
     });
   }, []);
 
@@ -457,25 +447,23 @@ export default function WhatsAppInboxPage() {
         </div>
       </header>
 
-      {/* Indicadores do módulo (§20). Vêm do mesmo /metrics que o painel usa; nada é
-          calculado no navegador para não discordar do banco. */}
-      {metrics && (
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-2 lg:grid-cols-4">
-          <Kpi label="Aguardando resposta" value={metrics.openConversations} tone={metrics.openConversations > 0 ? "amber" : undefined} />
-          <Kpi
-            label="Leads que responderam"
-            value={`${metrics.answeredToday}/${metrics.contactedToday}`}
-            hint="Só conta número identificado: @lid mascarado não prova que a pessoa respondeu."
-          />
-          <Kpi label="Follow-ups pendentes" value={metrics.followUpsPending} tone={metrics.followUpsPending > 0 ? "gold" : undefined} />
-          <Kpi
-            label="Entrega"
-            value={metrics.delivery.successRate != null ? `${metrics.delivery.successRate}%` : "—"}
-            hint={metrics.failed > 0 ? `${metrics.failed} mensagem(ns) com erro no histórico.` : "Nenhuma falha de envio registrada."}
-            tone={metrics.failed > 0 ? "red" : undefined}
-          />
-        </div>
-      )}
+      {/* Topo = quantidade de conversas em cada aba. O número vem do mesmo filtro da lista
+          (nada é contado no navegador) e clicar no cartão abre aquela aba. */}
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-2 lg:grid-cols-4">
+        {TAB_FILTERS.map((f) => {
+          const count = tabCounts?.[f];
+          return (
+            <Kpi
+              key={f}
+              label={FILTER_LABEL[f]}
+              value={count ?? "—"}
+              active={filter === f}
+              tone={f === "waiting" && (count ?? 0) > 0 ? "amber" : undefined}
+              onClick={() => setFilter(f)}
+            />
+          );
+        })}
+      </div>
       {showNewChat && (
         <Card className="p-4">
           <div className="flex flex-wrap items-end gap-3">
@@ -755,27 +743,48 @@ function Row({ label, value }: { label: string; value: string }) {
   );
 }
 
-/** Chip de indicador do topo (§20). O `hint` vai no title para não poluir a linha. */
+/** Cartão de aba do topo: mostra a quantidade e, ao clicar, abre aquela aba da lista. */
 function Kpi({
   label,
   value,
-  hint,
+  active = false,
   tone,
+  onClick,
 }: {
   label: string;
   value: string | number;
-  hint?: string;
+  active?: boolean;
   tone?: "amber" | "red" | "gold";
+  onClick?: () => void;
 }) {
-  const ring =
-    tone === "red" ? "border-red-500/40" : tone === "amber" ? "border-amber-500/30" : tone === "gold" ? "border-gold-500/40" : "border-zinc-800";
-  const text =
-    tone === "red" ? "text-red-300" : tone === "amber" ? "text-amber-300" : tone === "gold" ? "text-gold-300" : "text-zinc-100";
+  const ring = active
+    ? "border-gold-500/60 bg-gold-500/10"
+    : tone === "red"
+      ? "border-red-500/40 bg-zinc-900/40"
+      : tone === "amber"
+        ? "border-amber-500/30 bg-zinc-900/40"
+        : tone === "gold"
+          ? "border-gold-500/40 bg-zinc-900/40"
+          : "border-zinc-800 bg-zinc-900/40";
+  const text = active
+    ? "text-gold-300"
+    : tone === "red"
+      ? "text-red-300"
+      : tone === "amber"
+        ? "text-amber-300"
+        : tone === "gold"
+          ? "text-gold-300"
+          : "text-zinc-100";
   return (
-    <div className={`rounded-lg border ${ring} bg-zinc-900/40 px-3 py-2`} title={hint}>
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      className={`rounded-lg border px-3 py-2 text-left transition-colors hover:border-zinc-700 ${ring}`}
+    >
       <p className={`text-lg font-semibold leading-tight ${text}`}>{value}</p>
       <p className="text-[11px] text-zinc-500">{label}</p>
-    </div>
+    </button>
   );
 }
 

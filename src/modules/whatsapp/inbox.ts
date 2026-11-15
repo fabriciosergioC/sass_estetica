@@ -55,11 +55,11 @@ export type ConversationListItem = {
   lastMessage: { direction: string; body: string; createdAt: Date; status: string } | null;
 };
 
-export async function listConversations(
-  orgId: string,
-  opts: { filter?: ConversationFilter; search?: string; userId?: string | null; take?: number; skip?: number } = {}
-): Promise<{ items: ConversationListItem[]; total: number }> {
-  const filter = opts.filter ?? "all";
+/**
+ * Condição da lista para uma aba (sem busca). Numa função só porque o topo do painel conta
+ * as mesmas conversas: número do topo discordando da lista é o pior tipo de bug de contador.
+ */
+async function conversationWhere(orgId: string, filter: ConversationFilter, search?: string) {
   const where: Record<string, any> = { orgId, archived: false };
   // Toda aba — inclusive "Todas" — só enxerga conversa de cliente cadastrado. Número que
   // mandou mensagem sem estar no CRM fica gravado no banco, mas fora da lista; quando o
@@ -93,7 +93,7 @@ export async function listConversations(
     and.push({ ...FILTER_WHERE[filter] });
   }
 
-  const q = opts.search?.trim();
+  const q = search?.trim();
   if (q) {
     const matching = await db.whatsAppMessage.findMany({
       where: { orgId, body: containsCI(q) },
@@ -114,6 +114,14 @@ export async function listConversations(
   }
 
   where.AND = and;
+  return where;
+}
+
+export async function listConversations(
+  orgId: string,
+  opts: { filter?: ConversationFilter; search?: string; userId?: string | null; take?: number; skip?: number } = {}
+): Promise<{ items: ConversationListItem[]; total: number }> {
+  const where = await conversationWhere(orgId, opts.filter ?? "all", opts.search);
 
   const [rows, total] = await Promise.all([
     db.whatsAppConversation.findMany({
@@ -162,6 +170,23 @@ export async function listConversations(
     })),
     total,
   };
+}
+
+export type TabCounts = Record<Exclude<ConversationFilter, "all">, number>;
+
+/**
+ * Quantas conversas há em cada aba do painel. É o número que o topo da tela mostra: usa a
+ * MESMA condição da lista (`conversationWhere`), para o cartão nunca discordar da aba.
+ */
+export async function countConversationsByFilter(orgId: string): Promise<TabCounts> {
+  const filters = ["appointments", "in_progress", "waiting", "done"] as const;
+  const entries = await Promise.all(
+    filters.map(
+      async (filter) =>
+        [filter, await db.whatsAppConversation.count({ where: (await conversationWhere(orgId, filter)) as any })] as const
+    )
+  );
+  return Object.fromEntries(entries) as TabCounts;
 }
 
 export async function listTeam(orgId: string) {
