@@ -81,13 +81,20 @@ type Thread = {
   contact: Contact;
   customer: { id: string; name: string; phone: string; whatsappOptIn: boolean; notes?: { id: string; content: string }[] } | null;
   assignee: { id: string; name: string } | null;
+  /** Agendamento que define o atendente responsável: próximo horário ativo ou o mais recente. */
+  appointment: {
+    id: string;
+    startAt: string;
+    status: string;
+    barber: { id: string; name: string } | null;
+    service: { id: string; name: string } | null;
+  } | null;
   labels: { id: string; name: string; color: string }[];
   followUps: { id: string; scheduledAt: string; reason: string; status: string }[];
   messages: MessageRow[];
 };
 
 type QuickReply = { id: string; shortcut: string; title: string | null; body: string };
-type TeamMember = { id: string; name: string; email: string; role: string };
 
 /** O que /api/whatsapp/metrics devolve; tudo opcional porque a tela continua útil sem número. */
 type PanelMetrics = {
@@ -107,12 +114,23 @@ const STATUS_OPTIONS = ["OPEN", "IN_PROGRESS", "WAITING_CUSTOMER", "DONE"];
 /** Limite prático do anexo: o data URL viaja no corpo do POST (a rota aceita até ~16 MB de texto). */
 const MAX_ATTACHMENT_BYTES = 3 * 1024 * 1024;
 
+/** Data/hora do atendimento no fuso da loja (mesmo formato das mensagens automáticas). */
+function appointmentWhen(iso: string): string {
+  return new Intl.DateTimeFormat("pt-BR", {
+    timeZone: "America/Sao_Paulo",
+    day: "2-digit",
+    month: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).format(new Date(iso));
+}
+
 export default function WhatsAppInboxPage() {
   const [filter, setFilter] = useState("all");
   const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
   const [items, setItems] = useState<ConversationItem[]>([]);
-  const [team, setTeam] = useState<TeamMember[]>([]);
   const [loadingList, setLoadingList] = useState(true);
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -151,7 +169,6 @@ export default function WhatsAppInboxPage() {
         const data = await res.json().catch(() => ({}));
         if (res.ok) {
           setItems(data.items ?? []);
-          setTeam(data.team ?? []);
         }
       } finally {
         if (!opts.silent) setLoadingList(false);
@@ -617,19 +634,20 @@ export default function WhatsAppInboxPage() {
                   </Select>
                 </div>
                 <div className="hidden w-36 shrink-0 lg:block">
-                  <Select
-                    value={thread.assigneeId ?? ""}
-                    onChange={(e) => void patchConversation({ assigneeId: e.target.value || null })}
-                    aria-label="Responsável pela conversa"
-                    title="Responsável pelo atendimento"
+                  {/* Atendente = profissional do agendamento (próximo horário ativo; sem ele, o
+                      mais recente). Não é escolha manual — antes este campo era um seletor de
+                      usuário e ficava "Sem responsável" mesmo com horário marcado. */}
+                  <p className="text-[10px] uppercase tracking-wide text-zinc-500">Atendente</p>
+                  <p
+                    className="truncate text-sm font-medium text-zinc-200"
+                    title={
+                      thread.appointment
+                        ? `${thread.appointment.service?.name ?? "Atendimento"} · ${appointmentWhen(thread.appointment.startAt)} · ${STATUS_LABEL[thread.appointment.status] ?? thread.appointment.status}`
+                        : "Sem agendamento vinculado a esta conversa"
+                    }
                   >
-                    <option value="">Sem responsável</option>
-                    {team.map((m) => (
-                      <option key={m.id} value={m.id}>
-                        {m.name}
-                      </option>
-                    ))}
-                  </Select>
+                    {thread.appointment?.barber?.name ?? thread.assignee?.name ?? "—"}
+                  </p>
                 </div>
               </>
             ) : (

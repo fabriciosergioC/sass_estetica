@@ -315,8 +315,38 @@ export async function getConversation(orgId: string, conversationId: string, mes
   });
   if (!conversation) return null;
 
+  // Atendente responsável pela conversa = profissional do agendamento. Não é escolha manual:
+  // prioriza o próximo horário ativo (quem realmente vai atender) e, sem ele, o agendamento
+  // mais recente — assim uma conversa de horário cancelado/remarcado ou pós-atendimento
+  // continua mostrando quem era o responsável em vez de "Sem responsável".
+  const customerId = conversation.customerId ?? conversation.contact?.customerId ?? null;
+  const appointmentWhere = {
+    include: {
+      barber: { select: { id: true, name: true } },
+      service: { select: { id: true, name: true } },
+    },
+  } as const;
+  const appointment = customerId
+    ? ((await db.appointment.findFirst({
+        where: {
+          orgId,
+          customerId,
+          status: { in: ["SCHEDULED", "CONFIRMED", "IN_SERVICE"] },
+          startAt: { gte: new Date() },
+        },
+        orderBy: { startAt: "asc" },
+        ...appointmentWhere,
+      })) ??
+      (await db.appointment.findFirst({
+        where: { orgId, customerId },
+        orderBy: { startAt: "desc" },
+        ...appointmentWhere,
+      })))
+    : null;
+
   return {
     ...conversation,
+    appointment,
     labels: conversation.labels.map((l) => l.label),
     messages: [...conversation.messages].reverse(),
   };
