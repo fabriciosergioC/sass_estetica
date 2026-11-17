@@ -19,11 +19,20 @@ export type ConversationFilter =
   | "waiting"
   | "done";
 
-const FILTER_WHERE: Record<Exclude<ConversationFilter, "all" | "appointments">, Record<string, unknown>> = {
-  in_progress: { status: "IN_PROGRESS" },
+const FILTER_WHERE: Record<Exclude<ConversationFilter, "all" | "appointments" | "in_progress">, Record<string, unknown>> = {
   waiting: { status: "WAITING_CUSTOMER" },
   done: { status: "DONE" },
 };
+
+/** Clientes com agendamento em algum dos status informados (sem repetir quem tem dois horários). */
+async function customerIdsWithAppointments(orgId: string, statuses: string[]): Promise<string[]> {
+  const appointments = await db.appointment.findMany({
+    where: { orgId, status: { in: statuses } },
+    select: { customerId: true },
+    distinct: ["customerId"],
+  });
+  return [...new Set(appointments.map((a) => a.customerId).filter(Boolean))] as string[];
+}
 
 /**
  * Condição de "esta conversa é de um cliente cadastrado".
@@ -72,14 +81,10 @@ async function conversationWhere(orgId: string, filter: ConversationFilter, sear
   // eram só um filtro de status da conversa, então qualquer contato que mandasse "oi" aparecia
   // em "Finalizadas"/"Aguardando resposta" mesmo sem nunca ter sido agendado.
   if (filter === "appointments") {
-    // A aba "Agendamentos" é a agenda de hoje em diante (horário ativo); as demais abas
-    // aceitam qualquer agendamento do cliente, senão "Finalizadas" nunca teria ninguém.
-    const appointments = await db.appointment.findMany({
-      where: { orgId, status: { in: ["SCHEDULED", "CONFIRMED", "IN_SERVICE"] } },
-      select: { customerId: true },
-      distinct: ["customerId"],
-    });
-    const customerIds = [...new Set(appointments.map((a) => a.customerId).filter(Boolean))];
+    // "Agendamentos" é o que ainda vai começar: quem clicou "Iniciar" na Agenda sai daqui e
+    // passa a viver em "Em atendimento" (abaixo). Deixar IN_SERVICE nas duas abas fazia o
+    // mesmo atendimento aparecer duplicado no painel.
+    const customerIds = await customerIdsWithAppointments(orgId, ["SCHEDULED", "CONFIRMED"]);
 
     // O vínculo do cliente pode estar na conversa ou só no contato — é o caso mais comum de
     // quem chegou pelo WhatsApp e foi agendado depois no menu Agenda.
@@ -87,6 +92,23 @@ async function conversationWhere(orgId: string, filter: ConversationFilter, sear
       OR: [
         { customerId: { in: customerIds } },
         { contact: { customerId: { in: customerIds } } },
+      ],
+    });
+  } else if (filter === "in_progress") {
+    // "Em atendimento" é o retrato do botão "Iniciar": entra a conversa marcada como
+    // IN_PROGRESS e também a de cliente com agendamento IN_SERVICE. A segunda condição é
+    // necessária porque o recorte é por cliente (não por horário) e garante que o serviço
+    // iniciado na Agenda apareça aqui mesmo que o status do chat tenha se perdido antes.
+    const inServiceCustomerIds = await customerIdsWithAppointments(orgId, ["IN_SERVICE"]);
+    and.push({
+      OR: [
+        { status: "IN_PROGRESS" },
+        ...(inServiceCustomerIds.length
+          ? [
+              { customerId: { in: inServiceCustomerIds } },
+              { contact: { customerId: { in: inServiceCustomerIds } } },
+            ]
+          : []),
       ],
     });
   } else if (filter !== "all") {

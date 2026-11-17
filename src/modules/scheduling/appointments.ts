@@ -586,10 +586,12 @@ export async function syncWhatsAppConversationStatus(
   });
 
   // Cliente do CRM sem conversa no WhatsApp: criamos pelo telefone para o agendamento
-  // aparecer no painel. Só na abertura — cancelar/CONCLUIR um cliente que nunca falou no
-  // WhatsApp não pode fabricar uma conversa "Concluída" do nada. Sem telefone discável
+  // aparecer no painel. Vale para a abertura (agendou) e para o início do atendimento —
+  // quem clica "Iniciar" na Agenda precisa ver o serviço na aba "Em atendimento", mesmo que
+  // o cliente nunca tenha mandado mensagem. Cancelar/concluir um cliente que nunca falou no
+  // WhatsApp não pode fabricar uma conversa "finalizada" do nada. Sem telefone discável
   // também não dá para inventar um chat.
-  if (conversations.length === 0 && targetStatus === "OPEN") {
+  if (conversations.length === 0 && (targetStatus === "OPEN" || targetStatus === "IN_PROGRESS")) {
     try {
       const { ensureConversationForTarget } = await import("@/modules/whatsapp/ingest");
       const { toWhatsAppDigits } = await import("@/lib/phone");
