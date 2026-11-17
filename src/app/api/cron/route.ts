@@ -3,6 +3,7 @@ import { db } from "@/lib/db";
 import { jsonOk } from "@/lib/api";
 import { processJobs } from "@/modules/automation/jobs";
 import { detectOpportunities } from "@/modules/intelligence/opportunities";
+import { returnDueWindowOpen, sweepReturnDueForAllOrgs } from "@/modules/automation/return-due";
 
 /**
  * POST /api/cron — worker agendado.
@@ -29,7 +30,14 @@ export async function POST(req: NextRequest) {
     created += await detectOpportunities(org.id);
   }
 
-  return jsonOk({ ok: true, processed, opportunitiesCreated: created });
+  // Retorno atrasado (3 semanas sem visita) também roda por aqui: o worker diário costuma
+  // bastar, mas com JOB_WORKER_ENABLED=0 quem movimenta a rotina é o cron externo.
+  let returnDue = 0;
+  if (returnDueWindowOpen()) {
+    returnDue = (await sweepReturnDueForAllOrgs()).customers;
+  }
+
+  return jsonOk({ ok: true, processed, opportunitiesCreated: created, returnDue });
 }
 
 /** GET também aceito para facilitar testes manuais com ?secret= */

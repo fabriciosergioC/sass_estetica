@@ -146,7 +146,7 @@ async function main() {
       { key: "cancellation", name: "Cancelamento", body: "Olá, {{cliente}}! Seu horário de {{data}} às {{hora}} na {{barbearia}} foi cancelado." },
       { key: "reschedule", name: "Remarcação", body: "Olá, {{cliente}}! Seu horário na {{barbearia}} foi remarcado para {{data}} às {{hora}} com {{barbeiro}}." },
       { key: "post_visit", name: "Pós-atendimento", body: "Olá, {{cliente}}! Obrigado pela visita na {{barbearia}}! Esperamos você novamente. Se puder, deixe sua avaliação. 💈" },
-      { key: "return_due", name: "Retorno", body: "Olá, {{cliente}}! Já faz um tempinho desde seu último corte na {{barbearia}}. Vamos agendar? ✂️" },
+      { key: "return_due", name: "Retorno atrasado", body: "Olá, {{cliente}}! Já faz um tempinho desde sua última visita na {{barbearia}}. Vamos agendar? Temos horários disponíveis essa semana. ✨" },
       { key: "slot_recovery", name: "Recuperação de horário", body: "Olá, {{cliente}}! Surgiu um horário hoje às {{hora}} na {{barbearia}} com {{barbeiro}}. Gostaria de aproveitar?" },
     ];
     await db.messageTemplate.createMany({ data: templates.map((t) => ({ ...t, orgId: org.id })) });
@@ -158,6 +158,7 @@ async function main() {
         { event: "appointment.created", action: "schedule_reminder", config: { template: "reminder_24h", hoursBefore: 24 } },
         { event: "appointment.completed", action: "schedule_reminder", config: { template: "post_visit", delayMinutes: 0 } },
         { event: "appointment.no_show", action: "notify_admin", config: { title: "Falta registrada" } },
+        { event: "customer.return_due", action: "send_whatsapp", config: { template: "return_due" } },
         { event: "slot.opened", action: "create_opportunity", config: {} },
       ].map((r) => ({ ...r, orgId: org.id, config: JSON.stringify(r.config) })),
     });

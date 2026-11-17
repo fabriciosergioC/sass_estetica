@@ -14,6 +14,8 @@ import { nextPendingRunAt, processJobs, requeueOrphanProcessing } from "./jobs";
 const GLOBAL_KEY = "__automation_worker__" as const;
 /** Reconexão do WhatsApp não precisa ser tentada a cada acordada curta da fila. */
 const AUTO_CONNECT_EVERY_MS = 60_000;
+/** Varredura de "retorno atrasado": uma vez por dia basta (e o cooldown é de 3 semanas). */
+const RETURN_DUE_SWEEP_EVERY_MS = 24 * 60 * 60 * 1000;
 
 type WorkerState = {
   timer: ReturnType<typeof setTimeout> | null;
@@ -26,6 +28,8 @@ type WorkerState = {
   /** já fizemos o pente de mensagens presas em QUEUED nesta subida? */
   reconciled?: boolean;
   lastAutoConnectAt: number;
+  /** última varredura de retorno atrasado (0 = ainda não rodou nesta subida). */
+  lastReturnDueSweepAt: number;
   /** Teto de sossego: nunca dormir mais que isso, mesmo sem job pendente. */
   maxIdleMs: number;
 };
@@ -41,6 +45,7 @@ function getState(): WorkerState {
       processed: 0,
       reconciled: false,
       lastAutoConnectAt: 0,
+      lastReturnDueSweepAt: 0,
       maxIdleMs: 60_000,
     } satisfies WorkerState;
   }
@@ -92,6 +97,22 @@ async function tick() {
     if (processed > 0) {
       st.processed += processed;
       console.log(`[Worker] ⚙️ ${processed} job(s) processado(s) (total ${st.processed}).`);
+    }
+
+    // 3) Retorno atrasado: quem não volta há 3 semanas recebe o convite uma vez por dia.
+    //    Fora da janela da loja (8h–20h) o ciclo não roda — o worker acorda a cada minuto
+    //    de qualquer forma, então a varredura acontece assim que a janela abre.
+    if (Date.now() - st.lastReturnDueSweepAt >= RETURN_DUE_SWEEP_EVERY_MS) {
+      const { returnDueWindowOpen, sweepReturnDueForAllOrgs } = await import("./return-due");
+      if (returnDueWindowOpen()) {
+        const result = await sweepReturnDueForAllOrgs();
+        st.lastReturnDueSweepAt = Date.now();
+        if (result.customers > 0) {
+          console.log(
+            `[Worker] 📨 Retorno atrasado: ${result.customers} cliente(s) na régua de 3 semanas.`
+          );
+        }
+      }
     }
   } catch (err) {
     console.error("[Worker] Erro no ciclo de jobs:", err);

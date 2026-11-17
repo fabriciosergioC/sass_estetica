@@ -33,7 +33,7 @@ const EVENT_LABEL: Record<string, string> = {
   "appointment.no_show": "Cliente faltou",
   "customer.created": "Novo cliente",
   "customer.inactive": "Cliente inativo",
-  "customer.return_due": "Retorno devido",
+  "customer.return_due": "Retorno atrasado (3 semanas sem visita)",
   "slot.opened": "Horário liberado",
 };
 

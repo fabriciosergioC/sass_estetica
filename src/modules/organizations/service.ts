@@ -98,6 +98,10 @@ export const DEFAULT_RULES: Array<{ event: string; action: string; config: Recor
   // Pós-atendimento sai junto com a conclusão do serviço. Era 30 min de espera e o cliente
   // (e o operador) ficavam sem o agradecimento justamente na hora do caixa.
   { event: "appointment.completed", action: "schedule_reminder", config: { template: "post_visit", delayMinutes: 0 } },
+  // Cliente que não volta há 3 semanas. Não é um evento da Agenda: a varredura diária em
+  // `src/modules/automation/return-due.ts` publica `customer.return_due` para quem está na
+  // régua, e esta regra faz o convite sair pelo template "Retorno atrasado".
+  { event: "customer.return_due", action: "send_whatsapp", config: { template: "return_due" } },
 ];
 
 /** Provisiona uma nova barbearia com padrões sensatos. */
