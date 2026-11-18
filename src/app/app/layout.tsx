@@ -53,7 +53,6 @@ export default async function AppLayout({ children }: { children: React.ReactNod
           orgName: orgName,
           activeOrgId: session.activeOrgId,
           isSuperAdmin: session.isSuperAdmin,
-          memberships: memberships,
         }}
       />
       <AppLayoutShell>{children}</AppLayoutShell>

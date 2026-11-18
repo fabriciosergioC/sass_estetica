@@ -817,3 +817,20 @@ model SystemSetting {
   key   String @id
   value String
 }
+
+// Token de administrador que libera o cadastro de novas clínicas. É gerado na área de
+// administração da plataforma, vale 7 dias e depois precisa ser gerado outro. Guardamos só
+// o hash: o valor em claro aparece uma única vez, na hora de gerar.
+model SignupToken {
+  id          String    @id @default(cuid())
+  tokenHash   String    @unique
+  label       String? // anotação livre: para quem o token foi gerado
+  createdById String?
+  createdAt   DateTime  @default(now())
+  expiresAt   DateTime
+  revokedAt   DateTime?
+  useCount    Int       @default(0)
+  lastUsedAt  DateTime?
+
+  @@index([expiresAt])
+}

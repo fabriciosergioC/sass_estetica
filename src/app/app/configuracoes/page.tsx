@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { Button, Card, Field, Input, Textarea, Select, Badge } from "@/components/ui";
 import { toast } from "@/components/toast";
@@ -44,24 +45,32 @@ function instagramHref(value: string | null): string | null {
 }
 
 export default function ConfiguracoesPage() {
+  const router = useRouter();
   const [org, setOrg] = useState<Organization | null>(null);
   const [plan, setPlan] = useState<Plan>(null);
   const [hours, setHours] = useState<Hour[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [savingHours, setSavingHours] = useState(false);
+  // Nome do próprio usuário (sidebar). Separado de `org.name` de propósito.
+  const [meName, setMeName] = useState("");
+  const [meError, setMeError] = useState<string | null>(null);
+  const [savingProfile, setSavingProfile] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
-    const [orgRes, hoursRes] = await Promise.all([
+    const [orgRes, hoursRes, meRes] = await Promise.all([
       fetch("/api/organizations", { cache: "no-store" }),
       fetch("/api/business-hours", { cache: "no-store" }),
+      fetch("/api/auth/session", { cache: "no-store" }),
     ]);
     const orgData = await orgRes.json();
     const hoursData = await hoursRes.json();
+    const meData = await meRes.json().catch(() => ({}));
     setOrg(orgData.organization ?? null);
     setPlan(orgData.plan ?? null);
     setHours(hoursData.hours ?? []);
+    if (typeof meData?.session?.name === "string") setMeName(meData.session.name);
     setLoading(false);
   }, []);
 
@@ -97,6 +106,36 @@ export default function ConfiguracoesPage() {
     }
     toast("Configurações salvas.");
     load();
+  }
+
+  async function saveProfile() {
+    const name = meName.trim();
+    if (name.length < 2) {
+      setMeError("Informe seu nome.");
+      return;
+    }
+    setMeError(null);
+    setSavingProfile(true);
+    try {
+      const res = await fetch("/api/auth/profile", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setMeError(data.error ?? "Não foi possível salvar seu nome.");
+        return;
+      }
+      setMeName(data.user?.name ?? name);
+      toast("Seu nome foi atualizado.");
+      // O nome vem do cookie de sessão no layout; refresh para a sidebar refletir na hora.
+      router.refresh();
+    } catch {
+      setMeError("Falha de conexão. Tente novamente.");
+    } finally {
+      setSavingProfile(false);
+    }
   }
 
   async function saveHours() {
@@ -157,6 +196,30 @@ export default function ConfiguracoesPage() {
           Dados da clínica, aparência da página pública e horários.
         </p>
       </header>
+
+      <Card className="p-5">
+        <h2 className="font-medium">Minha conta</h2>
+        <p className="mt-1 text-xs text-zinc-500">
+          Nome exibido no menu lateral. Não altera o nome da clínica.
+        </p>
+        <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-end">
+          <div className="flex-1">
+            <Field label="Seu nome" error={meError ?? undefined}>
+              <Input
+                value={meName}
+                onChange={(e) => {
+                  setMeName(e.target.value);
+                  setMeError(null);
+                }}
+                placeholder="Seu nome"
+              />
+            </Field>
+          </div>
+          <Button onClick={saveProfile} disabled={savingProfile}>
+            {savingProfile ? "Salvando..." : "Salvar nome"}
+          </Button>
+        </div>
+      </Card>
 
       <Card className="p-5">
         <div className="flex items-center justify-between">

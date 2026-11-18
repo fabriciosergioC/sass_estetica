@@ -4,7 +4,6 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { ThemeMenu } from "@/components/theme";
-import { Dialog } from "@/components/dialog";
 import { isBookingPreview } from "@/lib/nav";
 import type { Role } from "@/lib/auth/permissions";
 
@@ -29,6 +28,7 @@ const NAV: NavItem[] = [
   { href: "/app/recebimentos", label: "Recebimentos", icon: "💰", roles: ["ADMIN", "MANAGER", "RECEPTIONIST"] },
   { href: "/app/relatorios", label: "Relatórios", icon: "📈", roles: ["ADMIN", "MANAGER"] },
   { href: "/app/whatsapp", label: "WhatsApp", icon: "💬", roles: ["ADMIN"] },
+  { href: "/app/usuarios", label: "Usuários", icon: "👤", roles: ["ADMIN"] },
   { href: "/app/configuracoes", label: "Configurações", icon: "⚙️", roles: ["ADMIN"] },
 ];
 
@@ -39,37 +39,24 @@ export type ShellUser = {
   orgName: string;
   activeOrgId: string;
   isSuperAdmin: boolean;
-  memberships: Array<{ orgId: string; orgName: string; role: string }>;
 };
-
-/** Empresa como ela chega do servidor quando o seletor é aberto. */
-type OrgOption = { orgId: string; orgName: string; role: string; viaSuperAdmin: boolean };
 
 export function Sidebar({ user }: { user: ShellUser }) {
   const pathname = usePathname();
   const router = useRouter();
   const [open, setOpen] = useState(false);
-  const [switcherOpen, setSwitcherOpen] = useState(false);
-  // A lista é buscada ao abrir o menu. `cachedMemberships` da sessão é retrato do login, então
-  // empresa criada depois não aparecia ali — enquanto isso ela serve de conteúdo inicial.
-  const [orgs, setOrgs] = useState<OrgOption[] | null>(null);
-  // O servidor responde com a flag lida da conta, então a etiqueta aparece sem precisar relogar.
-  const [superAdmin, setSuperAdmin] = useState<boolean | null>(null);
-  const [orgsError, setOrgsError] = useState(false);
-  const [pendingOrg, setPendingOrg] = useState<OrgOption | null>(null);
-  const [switchPassword, setSwitchPassword] = useState("");
-  const [switchError, setSwitchError] = useState("");
-  const [switching, setSwitching] = useState(false);
 
-  const items = NAV.filter((item) => item.roles.includes(user.role));
+  const items: NavItem[] = [
+    ...NAV.filter((item) => item.roles.includes(user.role)),
+    // Área da plataforma (tokens de cadastro): depende de isSuperAdmin, não do papel na
+    // clínica, por isso fica fora da NAV estática.
+    ...(user.isSuperAdmin
+      ? [{ href: "/app/admin", label: "Administração", icon: "🛡️", roles: [] }]
+      : []),
+  ];
 
-  const list: OrgOption[] =
-    orgs ?? user.memberships.map((m) => ({ ...m, viaSuperAdmin: false }));
-
-  // O nome no topo vem do cookie (`cachedOrgName`), que é retrato do login: se a empresa foi
-  // renomeada depois, a sidebar mostra o nome velho. Depois de abrir o seletor, o nome ao vivo
-  // da lista corrige o cabeçalho.
-  const activeName = orgs?.find((o) => o.orgId === user.activeOrgId)?.orgName ?? user.orgName;
+  // Título = clínica ativa (retrato do login em `cachedOrgName`).
+  const activeName = user.orgName;
 
   // Use useEffect to set active link after hydration to avoid hydration mismatch
   const [activeLink, setActiveLink] = useState<string | null>(null);
@@ -82,56 +69,6 @@ export function Sidebar({ user }: { user: ShellUser }) {
     );
     setActiveLink(matchingItem?.href ?? null);
   }, [pathname, items]);
-  async function toggleSwitcher() {
-    const next = !switcherOpen;
-    setSwitcherOpen(next);
-    if (!next) return;
-    setOrgsError(false);
-    try {
-      const res = await fetch("/api/auth/orgs", { cache: "no-store" });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        setOrgsError(true);
-        return;
-      }
-      setOrgs(data.items ?? []);
-      setSuperAdmin(Boolean(data.isSuperAdmin));
-    } catch {
-      setOrgsError(true);
-    }
-  }
-
-  function requestOrgSwitch(option: OrgOption) {
-    setSwitcherOpen(false);
-    if (option.orgId === user.activeOrgId) return;
-    setSwitchPassword("");
-    setSwitchError("");
-    setPendingOrg(option);
-  }
-
-  async function confirmOrgSwitch() {
-    if (!pendingOrg || switching) return;
-    setSwitching(true);
-    setSwitchError("");
-    try {
-      const res = await fetch("/api/auth/switch-org", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ orgId: pendingOrg.orgId, password: switchPassword }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        setSwitchError(data.error || "Não foi possível trocar de empresa.");
-        return;
-      }
-      setPendingOrg(null);
-      router.refresh();
-    } catch {
-      setSwitchError("Não foi possível trocar de empresa.");
-    } finally {
-      setSwitching(false);
-    }
-  }
 
   async function logout() {
     await fetch("/api/auth/logout", { method: "POST" });
@@ -166,7 +103,7 @@ export function Sidebar({ user }: { user: ShellUser }) {
               <path d="M3 6h18M3 12h18M3 18h18" strokeLinecap="round" />
             </svg>
           </button>
-          <span className="font-semibold tracking-tight">{activeName}</span>
+          <span className="truncate font-semibold tracking-tight">{activeName}</span>
           <div className="h-8 w-8 rounded-full bg-gold-500/15 text-center text-xs leading-8 text-gold-400">
             {initials}
           </div>
@@ -193,54 +130,11 @@ export function Sidebar({ user }: { user: ShellUser }) {
           <div className="flex items-center gap-2 border-b border-zinc-800 px-5 py-4">
             <span className="text-xl">✨</span>
             <div className="min-w-0 flex-1">
+              {/* Título = clínica ativa. Sem seletor de usuário/empresa. */}
               <p className="truncate text-sm font-semibold">{activeName}</p>
-              <button
-                onClick={toggleSwitcher}
-                className="text-xs text-zinc-500 hover:text-gold-400"
-              >
-                trocar de usuário ▾
-              </button>
             </div>
             <ThemeMenu />
           </div>
-
-          {switcherOpen && (
-            <div className="max-h-72 overflow-y-auto border-b border-zinc-800 bg-zinc-900/60 px-3 py-2">
-              {(superAdmin ?? user.isSuperAdmin) && (
-                <p className="px-2 pb-1 text-[10px] uppercase tracking-wide text-zinc-600">
-                  administrador da plataforma
-                </p>
-              )}
-              {orgsError && (
-                <p className="px-2 pb-1 text-xs text-zinc-500">
-                  Não foi possível atualizar a lista; mostrando as empresas do seu login.
-                </p>
-              )}
-              {list.length === 0 && (
-                <p className="px-2 py-1.5 text-xs text-zinc-500">Nenhuma empresa encontrada.</p>
-              )}
-              {list.map((m) => (
-                <button
-                  key={m.orgId}
-                  onClick={() => requestOrgSwitch(m)}
-                  className={`block w-full truncate rounded-md px-2 py-1.5 text-left text-sm hover:bg-zinc-800 ${
-                    m.orgId === user.activeOrgId
-                      ? "text-gold-400"
-                      : "text-zinc-300 hover:text-zinc-100"
-                  }`}
-                >
-                  {m.orgName}
-                  {m.orgId === user.activeOrgId && <span className="ml-1 text-gold-500">•</span>}
-                  {/* Deixa visível que aquela empresa não é dele — é acesso de administração. */}
-                  {m.viaSuperAdmin && (
-                    <span className="ml-1 text-[10px] uppercase tracking-wide text-zinc-600">
-                      acesso administrativo
-                    </span>
-                  )}
-                </button>
-              ))}
-            </div>
-          )}
 
           <nav className="flex-1 space-y-1 overflow-y-auto px-3 py-4">
             {items.map((item) => {
@@ -285,53 +179,6 @@ export function Sidebar({ user }: { user: ShellUser }) {
           </div>
         </aside>
       )}
-
-      <Dialog
-        open={Boolean(pendingOrg)}
-        onClose={() => {
-          if (!switching) setPendingOrg(null);
-        }}
-        title="Confirmar troca de empresa"
-      >
-        <form
-          onSubmit={(event) => {
-            event.preventDefault();
-            void confirmOrgSwitch();
-          }}
-          className="space-y-4"
-        >
-          <p className="text-sm text-zinc-400">
-            Para acessar <strong className="text-zinc-100">{pendingOrg?.orgName}</strong>, informe sua senha.
-          </p>
-          <input
-            type="password"
-            value={switchPassword}
-            onChange={(event) => setSwitchPassword(event.target.value)}
-            placeholder="Senha do usuário"
-            autoFocus
-            autoComplete="current-password"
-            className="w-full rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm outline-none focus:border-gold-500"
-          />
-          {switchError && <p className="text-sm text-red-400">{switchError}</p>}
-          <div className="flex justify-end gap-2">
-            <button
-              type="button"
-              onClick={() => setPendingOrg(null)}
-              disabled={switching}
-              className="rounded-lg border border-zinc-700 px-3 py-2 text-sm text-zinc-300 hover:bg-zinc-800"
-            >
-              Cancelar
-            </button>
-            <button
-              type="submit"
-              disabled={switching || !switchPassword}
-              className="rounded-lg bg-gold-500 px-3 py-2 text-sm font-semibold text-zinc-950 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {switching ? "Verificando..." : "Acessar empresa"}
-            </button>
-          </div>
-        </form>
-      </Dialog>
     </>
   );
 }

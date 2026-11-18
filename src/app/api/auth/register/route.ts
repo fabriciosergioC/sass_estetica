@@ -3,7 +3,7 @@ import { z } from "zod";
 import { db } from "@/lib/db";
 import { hashPassword } from "@/lib/auth/password";
 import { setSessionCookie } from "@/lib/auth/session";
-import { adminSignupPassword, isAdminSignupPassword } from "@/lib/auth/admin-password";
+import { useSignupToken } from "@/lib/auth/signup-tokens";
 import { handleApiError } from "@/lib/api";
 import { provisionOrganization, uniqueSlug } from "@/modules/organizations/service";
 
@@ -12,28 +12,30 @@ const schema = z.object({
   name: z.string().min(2, "Informe seu nome").max(80),
   email: z.string().email("E-mail inválido").toLowerCase(),
   password: z.string().min(8, "A senha precisa ter ao menos 8 caracteres").max(72),
-  phone: z.string().max(20).optional(),
-  adminPassword: z.preprocess(
+  phone: z.string().trim().max(20).optional(),
+  // Token gerado em /app/admin pelo administrador da plataforma (vale 7 dias).
+  adminToken: z.preprocess(
     (value) => (typeof value === "string" ? value : ""),
-    z.string().min(1, "Informe a senha de administrador")
+    z.string().min(1, "Informe o token de administrador")
   ),
 });
 
+/**
+ * Cria a primeira clínica de um usuário novo: o criador vira ADMIN da empresa.
+ * A tela manda o próprio nome como `barbearia` — a empresa pode ser renomeada depois.
+ * Usuários seguintes são criados de dentro da clínica, na tela Usuários.
+ */
 export async function POST(req: NextRequest) {
   try {
     const body = schema.parse(await req.json());
 
-    // Só quem tem a senha de administrador cria novas empresas. Ela é conferida antes de
+    // Só com um token de administrador válido se cria empresa. A conferência vem antes de
     // qualquer escrita para não deixar rastro de cadastro recusado.
-    if (!adminSignupPassword()) {
-      console.error("[register] ADMIN_SIGNUP_PASSWORD não configurada: cadastro de empresas desativado.");
+    if (!(await useSignupToken(body.adminToken))) {
       return NextResponse.json(
-        { error: "O cadastro de novas empresas está desativado no servidor." },
-        { status: 503 }
+        { error: "Token de administrador inválido ou expirado. Gere um novo na Administração da plataforma." },
+        { status: 403 }
       );
-    }
-    if (!isAdminSignupPassword(body.adminPassword)) {
-      return NextResponse.json({ error: "Senha de administrador incorreta." }, { status: 403 });
     }
 
     const existing = await db.user.findUnique({ where: { email: body.email } });
@@ -71,7 +73,15 @@ export async function POST(req: NextRequest) {
       role: "ADMIN",
     });
 
-    return NextResponse.json({ ok: true, org: { id: org.id, slug: org.slug } }, { status: 201 });
+    return NextResponse.json(
+      {
+        ok: true,
+        switched: true,
+        org: { id: org.id, slug: org.slug, name: org.name },
+        user: { id: user.id, name: user.name, email: user.email },
+      },
+      { status: 201 }
+    );
   } catch (err) {
     return handleApiError(err);
   }

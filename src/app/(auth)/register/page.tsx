@@ -8,23 +8,21 @@ import { Button, Card, Field, Input } from "@/components/ui";
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 type FormErrors = {
-  barbearia?: string;
   name?: string;
   email?: string;
   password?: string;
-  adminPassword?: string;
+  adminToken?: string;
   form?: string;
 };
 
 export default function RegisterPage() {
   const router = useRouter();
   const [form, setForm] = useState({
-    barbearia: "",
     name: "",
     email: "",
     password: "",
     phone: "",
-    adminPassword: "",
+    adminToken: "",
   });
   const [errors, setErrors] = useState<FormErrors>({});
   const [loading, setLoading] = useState(false);
@@ -38,11 +36,10 @@ export default function RegisterPage() {
 
   function validate(): FormErrors {
     const next: FormErrors = {};
-    if (form.barbearia.trim().length < 2) next.barbearia = "Informe o nome da clínica.";
     if (form.name.trim().length < 2) next.name = "Informe seu nome.";
     if (!EMAIL_RE.test(form.email.trim())) next.email = "Informe um e-mail válido.";
     if (form.password.length < 8) next.password = "A senha precisa ter ao menos 8 caracteres.";
-    if (!form.adminPassword) next.adminPassword = "Informe a senha de administrador.";
+    if (!form.adminToken) next.adminToken = "Informe o token de administrador.";
     return next;
   }
 
@@ -61,11 +58,15 @@ export default function RegisterPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          ...form,
-          barbearia: form.barbearia.trim(),
+          mode: "new",
+          // A clínica nasce com o nome do criador (o primeiro usuário) e pode ser renomeada
+          // depois em Configurações.
+          barbearia: form.name.trim(),
           name: form.name.trim(),
           email: form.email.trim(),
+          password: form.password,
           phone: form.phone.trim() || undefined,
+          adminToken: form.adminToken.trim(),
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -75,7 +76,7 @@ export default function RegisterPage() {
           typeof data?.error === "string"
             ? data.error
             : "Não foi possível criar o cadastro. Tente novamente.";
-        if (res.status === 403) setErrors({ adminPassword: message });
+        if (res.status === 403) setErrors({ adminToken: message });
         else if (res.status === 409) setErrors({ email: message });
         else setErrors({ form: message });
         return;
@@ -104,13 +105,6 @@ export default function RegisterPage() {
         </div>
 
         <form onSubmit={onSubmit} className="space-y-4">
-          <Field label="Nome da clínica" error={errors.barbearia}>
-            <Input
-              value={form.barbearia}
-              onChange={set("barbearia")}
-              placeholder="Clínica Bela Essência"
-            />
-          </Field>
           <Field label="Seu nome" error={errors.name}>
             <Input value={form.name} onChange={set("name")} placeholder="Seu nome" />
           </Field>
@@ -132,6 +126,7 @@ export default function RegisterPage() {
               autoComplete="new-password"
             />
           </Field>
+
           <Field label="WhatsApp da clínica" hint="Opcional — pode configurar depois">
             <Input
               value={form.phone}
@@ -142,16 +137,17 @@ export default function RegisterPage() {
           </Field>
 
           <Field
-            label="Senha de administrador"
-            hint="Obrigatória para liberar a criação de uma nova empresa"
-            error={errors.adminPassword}
+            label="Token de administrador"
+            hint="Gerado na Administração da plataforma — vale 7 dias"
+            error={errors.adminToken}
           >
             <Input
-              type="password"
-              value={form.adminPassword}
-              onChange={set("adminPassword")}
-              placeholder="••••••••"
+              type="text"
+              value={form.adminToken}
+              onChange={set("adminToken")}
+              placeholder="sbx_..."
               autoComplete="off"
+              spellCheck={false}
             />
           </Field>
 

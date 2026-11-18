@@ -35,7 +35,13 @@ export async function GET() {
     });
     const byOrg = new Map(memberships.map((m) => [m.orgId, m]));
 
-    let items: Array<{ orgId: string; orgName: string; role: string; viaSuperAdmin: boolean }>;
+    let items: Array<{
+      orgId: string;
+      orgName: string;
+      role: string;
+      viaSuperAdmin: boolean;
+      userName: string | null;
+    }>;
 
     if (isSuperAdmin) {
       const orgs = await db.organization.findMany({
@@ -50,6 +56,7 @@ export async function GET() {
         // switch-org vai aplicar, para a lista bater com o que a troca de fato faz.
         role: byOrg.get(o.id)?.role ?? "ADMIN",
         viaSuperAdmin: !byOrg.has(o.id),
+        userName: null,
       }));
     } else {
       const orgIds = memberships.map((m) => m.orgId);
@@ -65,8 +72,26 @@ export async function GET() {
           orgName: m.org.name,
           role: m.role,
           viaSuperAdmin: false,
+          userName: null,
         }));
     }
+
+    // O seletor exibe "pessoa — clínica": uma empresa pode ter mais de um ADMIN, então
+    // mostramos o mais antigo (quem criou/assumiu primeiro). Sem ADMIN ativo, fica só a empresa.
+    const admins = await db.organizationMember.findMany({
+      where: {
+        orgId: { in: items.map((i) => i.orgId) },
+        role: "ADMIN",
+        status: "ACTIVE",
+      },
+      select: { orgId: true, user: { select: { name: true } } },
+      orderBy: { createdAt: "asc" },
+    });
+    const adminByOrg = new Map<string, string>();
+    for (const a of admins) {
+      if (!adminByOrg.has(a.orgId)) adminByOrg.set(a.orgId, a.user.name);
+    }
+    items = items.map((i) => ({ ...i, userName: adminByOrg.get(i.orgId) ?? null }));
 
     return jsonOk({
       items,
