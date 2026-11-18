@@ -198,7 +198,7 @@ export function Sidebar({ user }: { user: ShellUser }) {
                 onClick={toggleSwitcher}
                 className="text-xs text-zinc-500 hover:text-gold-400"
               >
-                trocar de empresa ▾
+                trocar de usuário ▾
               </button>
             </div>
             <ThemeMenu />
