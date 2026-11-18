@@ -1,31 +1,52 @@
 "use client";
 
-import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { Button, Card, Field, Input } from "@/components/ui";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
+/**
+ * Regra do cadastro de clínica: a tela sempre começa em branco. Nada da conta ou da clínica
+ * que já está logada no navegador é reaproveitado — nem pelo estado do React, nem pelo
+ * preenchimento automático do navegador.
+ */
+const EMPTY_FORM = {
+  clinicName: "",
+  name: "",
+  email: "",
+  password: "",
+  phone: "",
+  adminToken: "",
+};
+
 type FormErrors = {
+  clinicName?: string;
   name?: string;
   email?: string;
+  phone?: string;
   password?: string;
   adminToken?: string;
   form?: string;
 };
 
 export default function RegisterPage() {
-  const router = useRouter();
-  const [form, setForm] = useState({
-    name: "",
-    email: "",
-    password: "",
-    phone: "",
-    adminToken: "",
-  });
+  const [form, setForm] = useState({ ...EMPTY_FORM });
   const [errors, setErrors] = useState<FormErrors>({});
   const [loading, setLoading] = useState(false);
+
+  // Voltar pelo histórico pode restaurar a página do cache do navegador (bfcache) com os
+  // campos antigos. O cadastro de uma clínica nova tem de abrir zerado de novo.
+  useEffect(() => {
+    function resetOnRestore(event: PageTransitionEvent) {
+      if (event.persisted) {
+        setForm({ ...EMPTY_FORM });
+        setErrors({});
+      }
+    }
+    window.addEventListener("pageshow", resetOnRestore);
+    return () => window.removeEventListener("pageshow", resetOnRestore);
+  }, []);
 
   function set(key: keyof typeof form) {
     return (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -36,6 +57,7 @@ export default function RegisterPage() {
 
   function validate(): FormErrors {
     const next: FormErrors = {};
+    if (form.clinicName.trim().length < 2) next.clinicName = "Informe o nome da clínica.";
     if (form.name.trim().length < 2) next.name = "Informe seu nome.";
     if (!EMAIL_RE.test(form.email.trim())) next.email = "Informe um e-mail válido.";
     if (form.password.length < 8) next.password = "A senha precisa ter ao menos 8 caracteres.";
@@ -59,9 +81,9 @@ export default function RegisterPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           mode: "new",
-          // A clínica nasce com o nome do criador (o primeiro usuário) e pode ser renomeada
-          // depois em Configurações.
-          barbearia: form.name.trim(),
+          // Clínica e pessoa são dados diferentes: o nome digitado aqui vira a clínica;
+          // `name` é quem está criando. A clínica nasce vazia, com essa pessoa como ADMIN.
+          barbearia: form.clinicName.trim(),
           name: form.name.trim(),
           email: form.email.trim(),
           password: form.password,
@@ -77,13 +99,15 @@ export default function RegisterPage() {
             ? data.error
             : "Não foi possível criar o cadastro. Tente novamente.";
         if (res.status === 403) setErrors({ adminToken: message });
+        else if (res.status === 409 && data?.field === "phone") setErrors({ phone: message });
         else if (res.status === 409) setErrors({ email: message });
         else setErrors({ form: message });
         return;
       }
 
-      router.push("/app");
-      router.refresh();
+      // Troca completa de identidade e de clínica: uma navegação nova evita que o cache do
+      // App Router reaproveite a tela/dados da clínica que estava aberta antes do cadastro.
+      window.location.replace("/app");
     } catch {
       setErrors({ form: "Falha de conexão. Verifique sua internet." });
     } finally {
@@ -104,9 +128,26 @@ export default function RegisterPage() {
           </p>
         </div>
 
-        <form onSubmit={onSubmit} className="space-y-4">
+        <form onSubmit={onSubmit} className="space-y-4" autoComplete="off">
+          <Field
+            label="Nome da clínica"
+            hint="A clínica começa vazia — você entra como administrador."
+            error={errors.clinicName}
+          >
+            <Input
+              value={form.clinicName}
+              onChange={set("clinicName")}
+              placeholder="Ex.: Bela Face"
+              autoComplete="off"
+            />
+          </Field>
           <Field label="Seu nome" error={errors.name}>
-            <Input value={form.name} onChange={set("name")} placeholder="Seu nome" />
+            <Input
+              value={form.name}
+              onChange={set("name")}
+              placeholder="Seu nome"
+              autoComplete="off"
+            />
           </Field>
           <Field label="E-mail" error={errors.email}>
             <Input
@@ -114,7 +155,7 @@ export default function RegisterPage() {
               value={form.email}
               onChange={set("email")}
               placeholder="voce@email.com"
-              autoComplete="email"
+              autoComplete="off"
             />
           </Field>
           <Field label="Senha" hint="Mínimo de 8 caracteres" error={errors.password}>
@@ -127,12 +168,17 @@ export default function RegisterPage() {
             />
           </Field>
 
-          <Field label="WhatsApp da clínica" hint="Opcional — pode configurar depois">
+          <Field
+            label="WhatsApp da clínica"
+            hint="Opcional — pode configurar depois. Um número por clínica."
+            error={errors.phone}
+          >
             <Input
               value={form.phone}
               onChange={set("phone")}
               placeholder="(11) 99999-9999"
               type="tel"
+              autoComplete="off"
             />
           </Field>
 

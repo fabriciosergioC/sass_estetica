@@ -1,4 +1,5 @@
 import { db, type PrismaClientOrTx } from "@/lib/db";
+import { phoneKey, whatsappPhoneVariants } from "@/lib/phone";
 
 type Tx = PrismaClientOrTx;
 
@@ -21,6 +22,73 @@ export async function uniqueSlug(base: string): Promise<string> {
     n++;
   }
   return candidate;
+}
+
+/**
+ * Regra da plataforma: um número de WhatsApp pertence a UMA clínica.
+ *
+ * Compara por `phoneKey` porque o mesmo número é gravado de jeitos diferentes — o cadastro
+ * grava "(11) 99999-9999", o painel grava "+55 11 99999-9999" e a conexão do WhatsApp grava
+ * os dígitos internacionais. Também considera o número já pareado em `WhatsAppConnection` /
+ * `WhatsAppAccount`: liberar outra clínica com ele criaria disputa pela mesma sessão do
+ * WhatsApp, que é uma por processo.
+ *
+ * Devolve a clínica que já usa o número (sem expor o nome em telas públicas) ou `null`.
+ */
+export async function findOrganizationUsingPhone(
+  rawPhone: string | null | undefined,
+  opts: { excludeOrgId?: string; tx?: Tx } = {}
+): Promise<{ id: string; name: string } | null> {
+  const wanted = phoneKeys(rawPhone);
+  if (wanted.size === 0) return null;
+  const client = opts.tx ?? db;
+  const otherOrg = opts.excludeOrgId ? { not: opts.excludeOrgId } : undefined;
+
+  function uses(raw: string | null | undefined): boolean {
+    for (const key of phoneKeys(raw)) {
+      if (wanted.has(key)) return true;
+    }
+    return false;
+  }
+
+  const orgs = await client.organization.findMany({
+    where: otherOrg ? { id: otherOrg } : undefined,
+    select: { id: true, name: true, phone: true, whatsapp: true },
+  });
+  const org = orgs.find((o) => uses(o.phone) || uses(o.whatsapp));
+  if (org) return { id: org.id, name: org.name };
+
+  const connections = await client.whatsAppConnection.findMany({
+    where: { phone: { not: null }, ...(otherOrg ? { orgId: otherOrg } : {}) },
+    select: { orgId: true, phone: true, org: { select: { name: true } } },
+  });
+  const connection = connections.find((c) => uses(c.phone));
+  if (connection) return { id: connection.orgId, name: connection.org.name };
+
+  const accounts = await client.whatsAppAccount.findMany({
+    where: { phone: { not: null }, ...(otherOrg ? { orgId: otherOrg } : {}) },
+    select: { orgId: true, phone: true, org: { select: { name: true } } },
+  });
+  const account = accounts.find((a) => uses(a.phone));
+  if (account) return { id: account.orgId, name: account.org.name };
+
+  return null;
+}
+
+/**
+ * Formas equivalentes do MESMO número: ignora pontuação/DDI e a variação do 9º dígito dos
+ * celulares brasileiros (`11999999999` ↔ `1199999999`), que o WhatsApp trata como a mesma
+ * linha. É a chave da regra "um WhatsApp por clínica".
+ */
+function phoneKeys(raw: string | null | undefined): Set<string> {
+  const keys = new Set<string>();
+  const base = phoneKey(raw);
+  if (base) keys.add(base);
+  for (const variant of whatsappPhoneVariants(raw)) {
+    const key = phoneKey(variant);
+    if (key) keys.add(key);
+  }
+  return keys;
 }
 
 const DEFAULT_HOURS: Array<{ weekday: number; openTime: string; closeTime: string; closed: boolean }> = [

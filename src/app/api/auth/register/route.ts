@@ -5,7 +5,7 @@ import { hashPassword } from "@/lib/auth/password";
 import { setSessionCookie } from "@/lib/auth/session";
 import { useSignupToken } from "@/lib/auth/signup-tokens";
 import { handleApiError } from "@/lib/api";
-import { provisionOrganization, uniqueSlug } from "@/modules/organizations/service";
+import { provisionOrganization, uniqueSlug, findOrganizationUsingPhone } from "@/modules/organizations/service";
 
 const schema = z.object({
   barbearia: z.string().min(2, "Informe o nome da clínica").max(80),
@@ -21,9 +21,10 @@ const schema = z.object({
 });
 
 /**
- * Cria a primeira clínica de um usuário novo: o criador vira ADMIN da empresa.
- * A tela manda o próprio nome como `barbearia` — a empresa pode ser renomeada depois.
- * Usuários seguintes são criados de dentro da clínica, na tela Usuários.
+ * Cria uma clínica nova do zero: usuário novo + empresa nova, com o criador como ADMIN.
+ * Nunca reaproveita a conta nem a clínica que já está logada no navegador — os dados da
+ * clínica existente não entram aqui. A empresa nasce sem clientes, serviços ou agenda.
+ * Usuários seguintes são criados de dentro da clínica, na tela Usuários (`/api/team`).
  */
 export async function POST(req: NextRequest) {
   try {
@@ -38,10 +39,23 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // O e-mail é do login NOVO. Se já existe, a pessoa já está numa clínica e entra por
+    // "Usuários" — este cadastro não transforma a conta existente em dona de outra empresa.
     const existing = await db.user.findUnique({ where: { email: body.email } });
     if (existing) {
       return NextResponse.json(
         { error: "Este e-mail já possui cadastro. Faça login." },
+        { status: 409 }
+      );
+    }
+
+    // Um WhatsApp não pode atender duas clínicas: bloqueia antes de qualquer escrita.
+    if (body.phone && (await findOrganizationUsingPhone(body.phone))) {
+      return NextResponse.json(
+        {
+          error: "Este WhatsApp já está cadastrado em outra clínica. Informe outro número.",
+          field: "phone",
+        },
         { status: 409 }
       );
     }
@@ -71,6 +85,10 @@ export async function POST(req: NextRequest) {
       tokenVersion: user.tokenVersion,
       activeOrgId: org.id,
       role: "ADMIN",
+      // Sessão já aponta para a clínica recém-criada, com o cache preenchido. Sem isso o
+      // painel cai no fallback ("Clínica") e pode exibir restos da clínica anterior.
+      cachedOrgName: org.name,
+      cachedMemberships: [{ orgId: org.id, orgName: org.name, role: "ADMIN" }],
     });
 
     return NextResponse.json(

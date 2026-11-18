@@ -4,6 +4,7 @@ import { db } from "@/lib/db";
 import { getSession, setSessionCookie } from "@/lib/auth/session";
 import { jsonOk, handleApiError } from "@/lib/api";
 import { requirePermission } from "@/lib/auth/guards";
+import { findOrganizationUsingPhone } from "@/modules/organizations/service";
 
 const HEX = z.string().regex(/^#[0-9a-fA-F]{6}$/, "Cor inválida (use #rrggbb).");
 
@@ -59,6 +60,21 @@ export async function PATCH(req: NextRequest) {
 
     const current = await db.organization.findUnique({ where: { id: orgId } });
     if (!current) return jsonOk({ error: "Organização não encontrada." }, 404);
+
+    // Mesma regra do cadastro: um WhatsApp por clínica. A própria clínica fica de fora da
+    // comparação para poder salvar os outros campos sem colidir com o número que já usa.
+    for (const field of ["phone", "whatsapp"] as const) {
+      const value = body[field];
+      if (value && (await findOrganizationUsingPhone(value, { excludeOrgId: orgId }))) {
+        return jsonOk(
+          {
+            error: "Este WhatsApp já está cadastrado em outra clínica. Informe outro número.",
+            field,
+          },
+          409
+        );
+      }
+    }
 
     const data: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(body)) {
