@@ -42,6 +42,10 @@ export default function UsuariosPage() {
   const [errors, setErrors] = useState<FormErrors>({});
   // E-mail que já tem login: em vez de erro seco, oferecemos vincular a pessoa à clínica.
   const [existingUser, setExistingUser] = useState<{ id: string; name: string } | null>(null);
+  // Troca de nível na lista "Quem tem acesso": o select só grava quando aperta Salvar.
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+  const [drafts, setDrafts] = useState<Record<string, Role>>({});
+  const [savingRole, setSavingRole] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -53,6 +57,9 @@ export default function UsuariosPage() {
         return;
       }
       setItems(data.items ?? []);
+      setCurrentUserId(data.currentUserId ?? null);
+      // A lista recarregada manda: descarta trocas de nível que ficaram sem salvar.
+      setDrafts({});
     } finally {
       setLoading(false);
     }
@@ -147,6 +154,43 @@ export default function UsuariosPage() {
     }
   }
 
+  function clearDraft(memberId: string) {
+    setDrafts((current) => {
+      const next = { ...current };
+      delete next[memberId];
+      return next;
+    });
+  }
+
+  async function saveRole(member: Member) {
+    const role = drafts[member.id];
+    if (!role || role === member.role || savingRole) return;
+
+    setSavingRole(member.id);
+    try {
+      const res = await fetch("/api/team", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ memberId: member.id, role }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast(data.error ?? "Não foi possível alterar o nível de acesso.", "error");
+        clearDraft(member.id);
+        return;
+      }
+      setItems((prev) =>
+        prev.map((m) => (m.id === member.id ? { ...m, role: data.item.role as Role } : m))
+      );
+      clearDraft(member.id);
+      toast("Nível de acesso atualizado.");
+    } catch {
+      toast("Falha de conexão. Tente novamente.", "error");
+    } finally {
+      setSavingRole(null);
+    }
+  }
+
   return (
     <div className="mx-auto max-w-3xl space-y-6">
       <header>
@@ -234,6 +278,9 @@ export default function UsuariosPage() {
             {loading ? "Atualizando..." : "Atualizar"}
           </Button>
         </div>
+        <p className="mt-1 text-xs text-zinc-500">
+          Mude o nível para dar mais ou menos acesso dentro desta clínica.
+        </p>
 
         {!loading && items.length === 0 && (
           <p className="mt-4 text-sm text-zinc-500">Nenhum usuário ainda.</p>
@@ -241,21 +288,61 @@ export default function UsuariosPage() {
 
         {items.length > 0 && (
           <div className="mt-4 divide-y divide-zinc-800">
-            {items.map((m) => (
-              <div key={m.id} className="flex flex-wrap items-center gap-3 py-3">
-                <div className="min-w-0 flex-1">
-                  <p className="flex flex-wrap items-center gap-2 truncate text-sm text-zinc-200">
-                    {m.name}
-                    <Badge tone={m.role === "ADMIN" ? "gold" : "neutral"}>
-                      {ROLE_LABEL[m.role] ?? m.role}
-                    </Badge>
-                    {m.status !== "ACTIVE" && <Badge tone="amber">{m.status}</Badge>}
-                    {m.isSuperAdmin && <Badge tone="blue">plataforma</Badge>}
-                  </p>
-                  <p className="mt-0.5 truncate text-xs text-zinc-500">{m.email}</p>
+            {items.map((m) => {
+              const draft = drafts[m.id] ?? m.role;
+              const changed = draft !== m.role;
+              // Plataforma e a própria pessoa não têm o nível alterado por esta tela.
+              const locked = m.isSuperAdmin || m.userId === currentUserId;
+
+              return (
+                <div key={m.id} className="flex flex-wrap items-center gap-3 py-3">
+                  <div className="min-w-0 flex-1">
+                    <p className="flex flex-wrap items-center gap-2 truncate text-sm text-zinc-200">
+                      {m.name}
+                      <Badge tone={m.role === "ADMIN" ? "gold" : "neutral"}>
+                        {ROLE_LABEL[m.role] ?? m.role}
+                      </Badge>
+                      {m.status !== "ACTIVE" && <Badge tone="amber">{m.status}</Badge>}
+                      {m.isSuperAdmin && <Badge tone="blue">plataforma</Badge>}
+                    </p>
+                    <p className="mt-0.5 truncate text-xs text-zinc-500">{m.email}</p>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <Select
+                      value={draft}
+                      onChange={(e) =>
+                        setDrafts((current) => ({ ...current, [m.id]: e.target.value as Role }))
+                      }
+                      disabled={locked || savingRole === m.id}
+                      aria-label={`Nível de acesso de ${m.name}`}
+                      title={
+                        m.isSuperAdmin
+                          ? "Acesso da plataforma — não é alterado aqui."
+                          : m.userId === currentUserId
+                            ? "Você não pode alterar o seu próprio nível."
+                            : "Mudar o nível de acesso nesta clínica"
+                      }
+                      className="w-40"
+                    >
+                      <option value="ADMIN">Administrador</option>
+                      <option value="MANAGER">Gerente</option>
+                      <option value="RECEPTIONIST">Recepção</option>
+                      <option value="BARBER">Atendente</option>
+                    </Select>
+                    {changed && (
+                      <Button
+                        variant="secondary"
+                        onClick={() => saveRole(m)}
+                        disabled={savingRole === m.id}
+                      >
+                        {savingRole === m.id ? "Salvando..." : "Salvar"}
+                      </Button>
+                    )}
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </Card>

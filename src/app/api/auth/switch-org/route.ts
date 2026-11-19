@@ -38,38 +38,31 @@ export async function POST(req: NextRequest) {
       throw new HttpError(401, "Senha incorreta.");
     }
 
-    // Primeiro tenta encontrar no cache da sessão
-    const cachedMembership = session.cachedMemberships?.find((m) => m.orgId === orgId);
+    // O papel vem do banco, não do cache: se o nível de acesso foi alterado depois do login,
+    // entrar na clínica deve usar o nível atual.
+    const membership = await db.organizationMember.findFirst({
+      where: { userId: session.userId, orgId },
+      include: { org: true },
+    });
 
     let orgName: string;
     let role: string;
     let viaSuperAdmin = false;
 
-    if (cachedMembership) {
-      // Usa dados cacheados - sem query no banco
-      orgName = cachedMembership.orgName;
-      role = cachedMembership.role;
+    if (membership && membership.status === "ACTIVE") {
+      orgName = membership.org.name;
+      role = membership.role;
+    } else if (await isPlatformAdmin(session)) {
+      // Administrador da plataforma: entra em qualquer empresa ATIVA mesmo sem vínculo,
+      // com o papel que a troca sempre aplicou — ADMIN. O que libera aqui é a SESSÃO
+      // (JWT assinado no servidor), não um campo vindo do navegador.
+      const org = await db.organization.findFirst({ where: { id: orgId, status: "ACTIVE" } });
+      if (!org) throw new HttpError(404, "Empresa não encontrada ou fora do ar.");
+      orgName = org.name;
+      role = "ADMIN";
+      viaSuperAdmin = true;
     } else {
-      // Fallback: busca no banco se não estiver no cache
-      const membership = await db.organizationMember.findFirst({
-        where: { userId: session.userId, orgId, status: "ACTIVE" },
-        include: { org: true },
-      });
-      if (membership) {
-        orgName = membership.org.name;
-        role = membership.role;
-      } else if (await isPlatformAdmin(session)) {
-        // Administrador da plataforma: entra em qualquer empresa ATIVA mesmo sem vínculo,
-        // com o papel que a troca sempre aplicou — ADMIN. O que libera aqui é a SESSÃO
-        // (JWT assinado no servidor), não um campo vindo do navegador.
-        const org = await db.organization.findFirst({ where: { id: orgId, status: "ACTIVE" } });
-        if (!org) throw new HttpError(404, "Empresa não encontrada ou fora do ar.");
-        orgName = org.name;
-        role = "ADMIN";
-        viaSuperAdmin = true;
-      } else {
-        throw new HttpError(403, "Você não tem acesso a esta clínica.");
-      }
+      throw new HttpError(403, "Você não tem acesso a esta clínica.");
     }
 
     if (viaSuperAdmin) {

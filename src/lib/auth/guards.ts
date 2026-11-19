@@ -1,3 +1,4 @@
+import { db } from "@/lib/db";
 import { getSession, type SessionPayload } from "./session";
 import { assertCan, type Permission } from "./permissions";
 
@@ -15,6 +16,31 @@ export class HttpError extends Error {
   }
 }
 
+/**
+ * Papel que a pessoa tem HOJE na clínica ativa.
+ *
+ * O papel dentro do JWT é o retrato do login e vale 7 dias. Quando um administrador muda o
+ * nível de acesso de alguém, o token daquela pessoa continua com o papel antigo. Por isso a
+ * cada requisição conferimos o vínculo no banco: assim diminuir o acesso vale na hora.
+ * Administrador da plataforma entra em qualquer empresa como ADMIN, mesmo sem vínculo.
+ */
+async function activeRole(session: SessionPayload, orgId: string): Promise<string> {
+  const member = await db.organizationMember.findUnique({
+    where: { orgId_userId: { orgId, userId: session.userId } },
+    select: { role: true, status: true },
+  });
+
+  if (member) {
+    if (member.status !== "ACTIVE" && !session.isSuperAdmin) {
+      throw new HttpError(403, "Seu acesso a esta clínica está desativado.");
+    }
+    return member.status === "ACTIVE" ? member.role : "ADMIN";
+  }
+
+  if (session.isSuperAdmin) return "ADMIN";
+  throw new HttpError(403, "Você não tem acesso a esta clínica.");
+}
+
 /** Exige sessão válida e org ativa; retorna contexto multi-tenant. */
 export async function requireOrg(): Promise<OrgContext> {
   const session = await getSession();
@@ -23,7 +49,8 @@ export async function requireOrg(): Promise<OrgContext> {
   if (!session.activeOrgId || !session.role) {
     throw new HttpError(403, "Nenhuma clínica ativa na sessão.");
   }
-  return { session, orgId: session.activeOrgId, role: session.role };
+  const role = await activeRole(session, session.activeOrgId);
+  return { session, orgId: session.activeOrgId, role };
 }
 
 /** Exige sessão + org + permissão específica. */

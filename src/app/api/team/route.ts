@@ -23,13 +23,19 @@ const linkSchema = z.object({
   role: roleSchema,
 });
 
+/** Troca do nível de acesso de quem já está na clínica. */
+const updateSchema = z.object({
+  memberId: z.string().min(1, "Escolha o usuário"),
+  role: roleSchema,
+});
+
 /**
  * Usuários da clínica ativa. Só ADMIN enxerga e mexe (matriz em lib/auth/permissions).
  * O superadmin que trocou para a empresa entra com papel ADMIN, então também passa aqui.
  */
 export async function GET() {
   try {
-    const { orgId } = await requirePermission("org:manage");
+    const { orgId, session } = await requirePermission("org:manage");
     const members = await db.organizationMember.findMany({
       where: { orgId },
       include: {
@@ -39,6 +45,8 @@ export async function GET() {
     });
 
     return jsonOk({
+      // A tela usa isto para não oferecer troca de nível na própria linha.
+      currentUserId: session.userId,
       items: members.map((m) => ({
         id: m.id,
         userId: m.userId,
@@ -114,6 +122,77 @@ export async function POST(req: NextRequest) {
       },
       201
     );
+  } catch (err) {
+    return handleApiError(err);
+  }
+}
+
+/**
+ * Troca o nível de acesso de alguém que já está nesta clínica.
+ *
+ * Regras:
+ *  - o vínculo é procurado SEMPRE por `memberId + orgId` (nunca só pelo id);
+ *  - a clínica não pode ficar sem nenhum ADMIN ativo;
+ *  - ninguém diminui o próprio acesso (evita se trancar para fora da tela Usuários);
+ *  - administrador da plataforma não é editado aqui: o acesso dele é outro nível.
+ */
+export async function PATCH(req: NextRequest) {
+  try {
+    const { orgId, session } = await requirePermission("org:manage");
+    const body = updateSchema.parse(await req.json());
+
+    const member = await db.organizationMember.findFirst({
+      where: { id: body.memberId, orgId },
+      include: { user: { select: { id: true, name: true, email: true, isSuperAdmin: true } } },
+    });
+    if (!member) return jsonOk({ error: "Usuário não encontrado nesta clínica." }, 404);
+
+    const item = {
+      id: member.id,
+      userId: member.userId,
+      name: member.user.name,
+      email: member.user.email,
+      isSuperAdmin: member.user.isSuperAdmin,
+      role: body.role,
+      status: member.status,
+      createdAt: member.createdAt,
+    };
+
+    if (member.role === body.role) return jsonOk({ ok: true, item });
+
+    if (member.user.isSuperAdmin) {
+      return jsonOk(
+        { error: "Administrador da plataforma tem acesso total e não pode ser alterado aqui." },
+        409
+      );
+    }
+    if (member.userId === session.userId) {
+      return jsonOk({ error: "Você não pode alterar o seu próprio nível de acesso." }, 409);
+    }
+    if (member.role === "ADMIN" && member.status === "ACTIVE" && body.role !== "ADMIN") {
+      const activeAdmins = await db.organizationMember.count({
+        where: { orgId, role: "ADMIN", status: "ACTIVE" },
+      });
+      if (activeAdmins <= 1) {
+        return jsonOk(
+          { error: "A clínica precisa de pelo menos um administrador. Dê ADMIN a outra pessoa antes." },
+          409
+        );
+      }
+    }
+
+    await db.organizationMember.update({
+      where: { id: member.id },
+      data: { role: body.role },
+    });
+
+    await audit(orgId, session.userId, "team.role", member.id, {
+      email: member.user.email,
+      from: member.role,
+      to: body.role,
+    });
+
+    return jsonOk({ ok: true, item });
   } catch (err) {
     return handleApiError(err);
   }

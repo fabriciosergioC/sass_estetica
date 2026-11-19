@@ -10,38 +10,27 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   if (!session) redirect("/login");
   if (!session.activeOrgId) redirect("/login");
 
-  // Usa dados cacheados da sessão - sem query no banco
-  const memberships = session.cachedMemberships ?? [];
-  const orgName = session.cachedOrgName ?? "Clínica";
+  // O papel dentro do JWT é o retrato do login e vale 7 dias. Se um administrador mudou o
+  // nível de acesso depois, o menu precisa refletir o banco agora — por isso a consulta.
+  const member = await db.organizationMember.findUnique({
+    where: { orgId_userId: { orgId: session.activeOrgId, userId: session.userId } },
+    select: { role: true, status: true },
+  });
 
-  // Se não tem cache, busca do banco (primeira vez após deploy)
-  if (memberships.length === 0) {
-    const dbMemberships = await db.organizationMember.findMany({
-      where: { userId: session.userId, status: "ACTIVE" },
-      include: { org: { select: { id: true, name: true, status: true } } },
-      orderBy: { createdAt: "asc" },
-      take: 10, // Limite para performance
+  // Vínculo removido/desativado tira a pessoa do painel. Administrador da plataforma pode
+  // estar numa empresa sem vínculo nenhum e continua entrando como ADMIN.
+  if ((!member || member.status !== "ACTIVE") && !session.isSuperAdmin) redirect("/login");
+
+  const role = member?.status === "ACTIVE" ? member.role : "ADMIN";
+
+  let orgName = session.cachedOrgName;
+  if (!orgName) {
+    const org = await db.organization.findUnique({
+      where: { id: session.activeOrgId },
+      select: { name: true },
     });
-
-    if (dbMemberships.length === 0 && !session.isSuperAdmin) redirect("/login");
-
-    memberships.push(
-      ...dbMemberships.map((m) => ({
-        orgId: m.orgId,
-        orgName: m.org.name,
-        role: m.role,
-      }))
-    );
+    orgName = org?.name ?? "Clínica";
   }
-
-  const active = memberships.find((m) => m.orgId === session.activeOrgId) ?? memberships[0];
-  // Administrador da plataforma pode estar numa empresa sem vínculo nenhum com ele; sem esta
-  // exceção ele seria expulso para /login por não ter barbearia própria no cache.
-  if (!active && !session.isSuperAdmin) redirect("/login");
-
-  // O papel da org ativa vem da sessão: o cache de memberships mostraria o papel de OUTRA
-  // barbearia quando ele entra na empresa dos outros como administrador.
-  const role = session.role ?? active?.role ?? "ADMIN";
 
   return (
     <div className="min-h-dvh">
