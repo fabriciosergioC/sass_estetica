@@ -30,8 +30,8 @@ export async function uniqueSlug(base: string): Promise<string> {
  * Compara por `phoneKey` porque o mesmo número é gravado de jeitos diferentes — o cadastro
  * grava "(11) 99999-9999", o painel grava "+55 11 99999-9999" e a conexão do WhatsApp grava
  * os dígitos internacionais. Também considera o número já pareado em `WhatsAppConnection` /
- * `WhatsAppAccount`: liberar outra clínica com ele criaria disputa pela mesma sessão do
- * WhatsApp, que é uma por processo.
+ * `WhatsAppAccount`: cada clínica tem a própria conexão, mas o mesmo aparelho do WhatsApp não
+ * pode estar pareado em duas clínicas ao mesmo tempo.
  *
  * Devolve a clínica que já usa o número (sem expor o nome em telas públicas) ou `null`.
  */

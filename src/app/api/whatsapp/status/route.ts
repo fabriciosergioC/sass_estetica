@@ -46,6 +46,10 @@ export async function GET(req: NextRequest) {
         live = { state: "ERROR", detail: error };
       }
       const [depth, pause] = await Promise.all([queueDepth(conn.orgId), pauseInfo(conn.orgId)]);
+      // Cada clínica tem o próprio socket: o diagnóstico mostra o estado DESTA conexão.
+      const snap = await import("@/modules/whatsapp/baileys/provider")
+        .then((m) => m.baileysSnapshot(conn.orgId))
+        .catch(() => null);
       return {
         org: conn.org?.name,
         orgId: conn.orgId,
@@ -55,6 +59,15 @@ export async function GET(req: NextRequest) {
         phone: conn.phone,
         lastSyncAt: conn.lastSyncAt,
         live,
+        socket: snap
+          ? {
+              hasSocket: snap.hasSocket,
+              state: snap.state?.status ?? null,
+              detail: snap.state?.detail ?? null,
+              account: snap.account,
+              qrAgeMs: snap.qr?.ageMs ?? null,
+            }
+          : null,
         queue: depth,
         pause,
         error,
@@ -62,14 +75,10 @@ export async function GET(req: NextRequest) {
     })
   );
 
-  const [jobs, msgs, unread, qr] = await Promise.all([
+  const [jobs, msgs, unread] = await Promise.all([
     db.job.groupBy({ by: ["status"], _count: { _all: true } }).catch(() => []),
     db.whatsAppMessage.groupBy({ by: ["status"], where: { direction: "OUT" }, _count: { _all: true } }),
     db.whatsAppMessage.count({ where: { direction: "IN", conversationId: null } }),
-    // Snapshot do socket em memória: diz QUAL org é dona dele agora (diagnóstico de tenancy).
-    import("@/modules/whatsapp/baileys/provider")
-      .then((m) => m.baileysSnapshot(conns[0]?.orgId ?? ""))
-      .catch(() => null),
   ]);
 
   return jsonOk({
@@ -85,19 +94,6 @@ export async function GET(req: NextRequest) {
     },
     limits: QUEUE_LIMITS,
     providers: listProviders(),
-    // ownerOrgId diferente de null = existe um socket vivo e a quem ele pertence.
-    socket: qr
-      ? {
-          ownerOrgId: qr.ownerOrgId,
-          hasSocket: qr.hasSocket,
-          state: qr.state?.status ?? null,
-          detail: qr.state?.detail ?? null,
-          account: qr.account,
-          reconnectAttempts: qr.reconnectAttempts,
-          lastStatusCode: qr.lastStatusCode,
-          qrAgeMs: qr.qr?.ageMs ?? null,
-        }
-      : null,
     connections: probes,
     jobs,
     mensagensOut: msgs,

@@ -14,7 +14,7 @@
 // do roteamento do App Router (foi por isso que /api/whatsapp/_debug/jobs sempre deu 404).
 import { NextRequest } from "next/server";
 import { jsonOk } from "@/lib/api";
-import { getSock, resolveJid } from "@/modules/whatsapp/baileys/provider";
+import { getSock, currentOwnerOrgIds, resolveJid } from "@/modules/whatsapp/baileys/provider";
 import { toWhatsAppDigits } from "@/lib/phone";
 
 export const dynamic = "force-dynamic";
@@ -58,7 +58,10 @@ export async function GET(req: NextRequest) {
     .map((s) => toWhatsAppDigits(s))
     .filter((d): d is string => Boolean(d));
 
-  const sock = getSock() as any;
+  // Cada clínica tem a própria sessão; ?orgId= escolhe qual consultar. Sem parâmetro,
+  // usamos a primeira sessão viva do processo (diagnóstico rápido).
+  const orgId = url.searchParams.get("orgId") ?? currentOwnerOrgIds()[0] ?? null;
+  const sock = (orgId ? getSock(orgId) : null) as any;
   if (!sock) return jsonOk({ error: "Socket do Baileys não está conectado neste processo." }, 503);
 
   const me = sock.authState?.creds?.me;

@@ -80,18 +80,8 @@ export class BarielsAdapter implements WhatsAppAdapter {
 
   async getStatus(ctx: AdapterContext): Promise<AdapterStatus> {
     const m = await baileys();
+    // Cada clínica tem a própria sessão: o snapshot é sempre o dela.
     const snap = await m.baileysSnapshot(ctx.orgId);
-
-    // Socket de outra barbearia: PARA esta org o estado é desconectado. Foi assim que uma
-    // org de teste apareceu "CONNECTED" no mesmo milissegundo da org real.
-    if (snap.ownerOrgId && snap.ownerOrgId !== ctx.orgId) {
-      return {
-        state: "DISCONNECTED",
-        detail: "Existe um WhatsApp conectado em outra clínica. Desconecte-o antes.",
-        provider: this.name,
-        mock: false,
-      };
-    }
 
     const qrLive = Boolean(snap.qr.qrCode);
     return {
@@ -130,9 +120,6 @@ export class BarielsAdapter implements WhatsAppAdapter {
   async getQr(ctx: AdapterContext): Promise<QrSnapshot> {
     const m = await baileys();
     const snap = await m.baileysSnapshot(ctx.orgId);
-    if (snap.ownerOrgId && snap.ownerOrgId !== ctx.orgId) {
-      return { qrCode: null, state: "DISCONNECTED", detail: "Socket pertence a outra clínica." };
-    }
     return {
       qrCode: snap.qr.qrCode,
       state: toConnectionState(snap.state.status, Boolean(snap.qr.qrCode)),
@@ -157,9 +144,7 @@ export class BarielsAdapter implements WhatsAppAdapter {
       throw new WhatsAppAdapterError(
         "NOT_CONNECTED",
         status.detail ?? "Baileys não conectado",
-        status.status === "DISCONNECTED" && /outra (?:barbearia|clínica)/.test(status.detail ?? "")
-          ? (status.detail as string)
-          : "Não foi possível enviar. O WhatsApp está desconectado — escaneie o QR Code em Configurações → WhatsApp."
+        "Não foi possível enviar. O WhatsApp desta clínica está desconectado — escaneie o QR Code em Configurações → WhatsApp."
       );
     }
   }

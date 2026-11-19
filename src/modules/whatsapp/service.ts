@@ -314,14 +314,12 @@ export async function setProvider(orgId: string, provider: string) {
 }
 
 /**
- * Reconexão automática no boot (§18), agora com a regra que faltava:
+ * Reconexão automática no boot (§18).
  *
- * O socket do WhatsApp Web é UM por processo. Antes o worker percorria todas as conexões e
- * chamava `ensureConnected` em cada uma, que devolvia o estado GLOBAL — então a org B (sem
- * pareamento nenhum) aparecia "CONNECTED" e mandava mensagem pelo QR da org A. Aqui:
- *  - só tentamos reconectar quem tem sessão salva no disco;
- *  - paramos no primeiro sucesso (ou no primeiro QR pendente);
- *  - nunca marcamos uma org como conectada sem que o adapter tenha confirmado aquela org.
+ * Cada clínica tem a SUA sessão do WhatsApp (socket e credenciais separados), então o
+ * worker retoma TODAS as clínicas que têm pareamento salvo, não só a primeira. As tentativas
+ * são simultâneas para que uma sessão lenta não atrase as outras. Uma clínica que ficou em
+ * QR pendente não impede as demais de subirem.
  */
 export async function autoConnectWhatsApp(): Promise<{ orgId: string | null; state: AdapterStatus["state"] }> {
   if (isMockEnabled()) return { orgId: null, state: "DISCONNECTED" };
@@ -332,54 +330,58 @@ export async function autoConnectWhatsApp(): Promise<{ orgId: string | null; sta
     return name === "BARIELS";
   });
 
-  for (const candidate of candidates) {
-    const ctx = await adapterContext(candidate.orgId);
-    const adapter = getAdapter("BARIELS");
+  type Attempt = { orgId: string; state: AdapterStatus["state"] };
 
-    // Já conectado nesta org: nada a retomar. Sem esta saída, o worker reingeria a conexão
-    // e reescrevia o estado a cada ciclo de 60s sem necessidade.
-    const current = await adapter.getStatus(ctx).catch(() => null);
-    if (current?.state === "CONNECTED") {
-      void retryRecentFailedNotices(candidate.orgId).catch((err) =>
-        console.error("[WhatsApp] Falha ao reativar avisos pendentes:", err)
-      );
-      return { orgId: candidate.orgId, state: "CONNECTED" };
-    }
+  const attempts = await Promise.all(
+    candidates.map(async (candidate): Promise<Attempt | null> => {
+      const ctx = await adapterContext(candidate.orgId);
+      const adapter = getAdapter("BARIELS");
 
-    if (!(await adapter.hasStoredSession?.(ctx))) continue;
-
-    try {
-      const status = await adapter.connect(ctx);
-      if (status.state === "CONNECTED") {
-        await ingestConnection(candidate.orgId, {
-          state: "CONNECTED",
-          detail: status.detail,
-          provider: "BARIELS",
-          jid: status.jid ?? null,
-          lid: status.lid ?? null,
-          phone: status.phone ?? null,
-          accountName: status.accountName ?? null,
-        });
-        console.log(`[WhatsApp] Sessão retomada para a org ${candidate.orgId}.`);
-        // Reconectou: os avisos que falharam enquanto o socket estava fora voltam para a fila.
+      // Já conectado nesta org: nada a retomar. Sem esta saída, o worker reingeria a conexão
+      // e reescrevia o estado a cada ciclo de 60s sem necessidade.
+      const current = await adapter.getStatus(ctx).catch(() => null);
+      if (current?.state === "CONNECTED") {
         void retryRecentFailedNotices(candidate.orgId).catch((err) =>
           console.error("[WhatsApp] Falha ao reativar avisos pendentes:", err)
         );
         return { orgId: candidate.orgId, state: "CONNECTED" };
       }
-      // QR pendente = alguém precisa escanear. Insistir em outra org só expulsaria esta.
-      if (status.state === "WAITING_QR") return { orgId: candidate.orgId, state: status.state };
-    } catch (err) {
-      await logWa({
-        orgId: candidate.orgId,
-        level: "error",
-        event: "connection.auto",
-        detail: err instanceof WhatsAppAdapterError ? err.message : String(err),
-      });
-    }
-  }
 
-  return { orgId: null, state: "DISCONNECTED" };
+      if (!(await adapter.hasStoredSession?.(ctx))) return null;
+
+      try {
+        const status = await adapter.connect(ctx);
+        if (status.state === "CONNECTED") {
+          await ingestConnection(candidate.orgId, {
+            state: "CONNECTED",
+            detail: status.detail,
+            provider: "BARIELS",
+            jid: status.jid ?? null,
+            lid: status.lid ?? null,
+            phone: status.phone ?? null,
+            accountName: status.accountName ?? null,
+          });
+          console.log(`[WhatsApp] Sessão retomada para a org ${candidate.orgId}.`);
+          // Reconectou: os avisos que falharam enquanto o socket estava fora voltam para a fila.
+          void retryRecentFailedNotices(candidate.orgId).catch((err) =>
+            console.error("[WhatsApp] Falha ao reativar avisos pendentes:", err)
+          );
+        }
+        return { orgId: candidate.orgId, state: status.state };
+      } catch (err) {
+        await logWa({
+          orgId: candidate.orgId,
+          level: "error",
+          event: "connection.auto",
+          detail: err instanceof WhatsAppAdapterError ? err.message : String(err),
+        });
+        return null;
+      }
+    })
+  );
+
+  const done = attempts.filter((a): a is Attempt => Boolean(a));
+  return done.find((a) => a.state === "CONNECTED") ?? done[0] ?? { orgId: null, state: "DISCONNECTED" };
 }
 
 /**

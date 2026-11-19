@@ -197,16 +197,16 @@ export async function restartBaileysWithFreshQr(orgId: string, source?: string):
   await module.restartWithFreshQr(orgId, source);
 }
 
-/** Aguarda o primeiro QR Code aparecer (ou a conexão abrir), no máximo `ms`. */
-export async function waitForBaileysQr(ms: number): Promise<void> {
+/** Aguarda o primeiro QR Code desta clínica aparecer (ou a conexão abrir), no máximo `ms`. */
+export async function waitForBaileysQr(orgId: string, ms: number): Promise<void> {
   const module = await import("./baileys/provider");
-  await module.waitForQr(ms);
+  await module.waitForQr(orgId, ms);
 }
 
-/** Fotografia do QR atual (imagem base64 + idade + detalhe do estado). */
-export async function getBaileysQrSnapshot() {
+/** Fotografia do QR atual desta clínica (imagem base64 + idade + detalhe do estado). */
+export async function getBaileysQrSnapshot(orgId: string) {
   const module = await import("./baileys/provider");
-  return module.getQrSnapshot();
+  return module.getQrSnapshot(orgId);
 }
 
 /** Conecta e garante que termine em conectado, QR pronto, ou erro explicado. */

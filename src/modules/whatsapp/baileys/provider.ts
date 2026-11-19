@@ -8,8 +8,9 @@
 // válidas). Se a pasta de auth existir mas a sessão foi revogada no celular, o Baileys
 // tenta reconectar com as credenciais antigas, recebe "401 loggedOut" e nunca gera QR.
 // Por isso todo close com erro de autenticação apaga a pasta de auth antes de reiniciar.
-// Também garantimos um único socket por vez: dois sockets dividindo a mesma pasta de
-// auth se expulsam ("440 connectionReplaced") e corrompem as credenciais.
+// Também garantimos um único socket por clínica: dois sockets dividindo a mesma pasta de
+// auth se expulsam ("440 connectionReplaced") e corrompem as credenciais. Clínicas
+// diferentes têm pastas e sockets próprios e ficam conectadas ao mesmo tempo.
 
 import {
   WASocket,
@@ -28,6 +29,7 @@ import { rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { db } from "@/lib/db";
 import { toWhatsAppDigits } from "@/lib/phone";
+import { findOrganizationUsingPhone } from "@/modules/organizations/service";
 import type { WhatsAppProvider, SendResult, ProviderStatus } from "../provider";
 import { ingestConnection, ingestEvent, ingestQr } from "../ingest";
 import { toDbStatus, type ConnectionState } from "../types";
@@ -76,9 +78,14 @@ const TERMINAL_CODES: number[] = [
 ];
 
 // ─── Estado global persistente entre hot-reloads ───────────────────────────
+//
+// Cada clínica tem a SUA sessão do WhatsApp: socket, QR, timers e credenciais separados
+// (pasta `baileys_auth_<orgId>`). O mapa abaixo é o registro dessas sessões no processo —
+// antes existia UM socket só, e conectar a clínica B derrubava a clínica A.
 
 type BaileysGlobalState = {
-  /** Socket considerado "dono" do estado. Eventos de sockets antigos são descartados. */
+  orgId: string;
+  /** Socket desta clínica. Eventos de sockets antigos da MESMA clínica são descartados. */
   sock: TrackedSocket | null;
   /** Contador que identifica cada socket criado; usado para ignorar eventos obsoletos. */
   generation: number;
@@ -86,7 +93,7 @@ type BaileysGlobalState = {
   qrCodeRaw: string | null;
   qrCodeBase64: string | null;
   qrCreatedAt: number | null;
-  /** true enquanto um `initBaileys` ainda está sendo executado (anti duplicidade). */
+  /** true enquanto um `initBaileys` desta clínica ainda está sendo executado (anti duplicidade). */
   isConnecting: boolean;
   /** Promise do init em andamento; chamadas concorrentes aguardam a mesma. */
   starting: Promise<void> | null;
@@ -95,7 +102,6 @@ type BaileysGlobalState = {
   reconnectTimer: ReturnType<typeof setTimeout> | null;
   qrWatchdog: ReturnType<typeof setTimeout> | null;
   reconnectAttempts: number;
-  orgId: string | null;
   lastStatusCode: number | null;
   /** true entre o pareamento (QR escaneado) e o close seguinte: obliga manter a credencial. */
   pairedRecently: boolean;
@@ -105,14 +111,19 @@ type BaileysGlobalState = {
    * grava em WhatsAppAccount.
    */
   account: { jid: string | null; lid: string | null; phone: string | null; name: string | null } | null;
+};
+
+type BaileysRegistry = {
+  sessions: Map<string, BaileysGlobalState>;
   /** Evita repetir o aviso de armazenamento efêmero a cada socket criado. */
   storageWarningLogged?: boolean;
 };
 
-const GLOBAL_KEY = "__baileys_state__" as const;
+const GLOBAL_KEY = "__baileys_registry__" as const;
 
-function newGlobalState(): BaileysGlobalState {
+function newSessionState(orgId: string): BaileysGlobalState {
   return {
+    orgId,
     sock: null,
     generation: 0,
     connectionState: { status: "DISCONNECTED", detail: "Não iniciado" },
@@ -125,30 +136,28 @@ function newGlobalState(): BaileysGlobalState {
     reconnectTimer: null,
     qrWatchdog: null,
     reconnectAttempts: 0,
-    orgId: null,
     lastStatusCode: null,
     pairedRecently: false,
     account: null,
   };
 }
 
-function getGlobal(): BaileysGlobalState {
+function getRegistry(): BaileysRegistry {
   const g = globalThis as any;
   if (!g[GLOBAL_KEY]) {
-    g[GLOBAL_KEY] = newGlobalState();
+    g[GLOBAL_KEY] = { sessions: new Map() } satisfies BaileysRegistry;
   }
-  const state: BaileysGlobalState = g[GLOBAL_KEY];
-  // Compatibilidade com estados gravados por versões anteriores do módulo.
-  state.generation ??= 0;
-  state.qrCreatedAt ??= null;
-  state.starting ??= null;
-  state.startSeq ||= 0;
-  state.reconnectTimer ??= null;
-  state.qrWatchdog ??= null;
-  state.reconnectAttempts ??= 0;
-  state.lastStatusCode ??= null;
-  state.pairedRecently ??= false;
-  state.account ??= null;
+  return g[GLOBAL_KEY] as BaileysRegistry;
+}
+
+/** Estado da clínica, criado sob demanda. Nunca devolve sessão de outra clínica. */
+function getState(orgId: string): BaileysGlobalState {
+  const registry = getRegistry();
+  let state = registry.sessions.get(orgId);
+  if (!state) {
+    state = newSessionState(orgId);
+    registry.sessions.set(orgId, state);
+  }
   return state;
 }
 
@@ -171,9 +180,9 @@ function authDirFor(orgId: string) {
 
 /** Avisa uma vez quando o processo claramente roda num host com disco efêmero. */
 function warnIfStorageIsEphemeral() {
-  const g = getGlobal();
-  if (g.storageWarningLogged) return;
-  g.storageWarningLogged = true;
+  const registry = getRegistry();
+  if (registry.storageWarningLogged) return;
+  registry.storageWarningLogged = true;
   if (process.env.RAILWAY_ENVIRONMENT && !process.env.WHATSAPP_AUTH_DIR?.trim()) {
     console.warn(
       "[Baileys] ⚠️ WHATSAPP_AUTH_DIR não configurado neste host. A sessão está sendo salva em " +
@@ -221,24 +230,24 @@ async function clearAuthDir(orgId: string) {
 
 // ─── Accessors ─────────────────────────────────────────────────────────────
 
-function getConnectionState(): ProviderStatus {
-  return getGlobal().connectionState;
+function getConnectionState(orgId: string): ProviderStatus {
+  return getState(orgId).connectionState;
 }
 
-function setConnectionState(state: ProviderStatus) {
-  getGlobal().connectionState = state;
+function setConnectionState(orgId: string, state: ProviderStatus) {
+  getState(orgId).connectionState = state;
 }
 
-function setQRCode(code: string | null) {
-  const g = getGlobal();
+function setQRCode(orgId: string, code: string | null) {
+  const g = getState(orgId);
   g.qrCodeRaw = code;
   g.qrCodeBase64 = null; // Invalida cache PNG
   g.qrCreatedAt = code ? Date.now() : null;
 }
 
 /** Retorna o QR Code como PNG base64 pronto para <img src="data:image/png;base64,...">. */
-async function getQRCode(): Promise<string | null> {
-  const g = getGlobal();
+async function getQRCode(orgId: string): Promise<string | null> {
+  const g = getState(orgId);
   if (!g.qrCodeRaw) {
     g.qrCodeBase64 = null;
     return null;
@@ -252,7 +261,7 @@ async function getQRCode(): Promise<string | null> {
       color: { dark: "#000000", light: "#ffffff" },
     });
     g.qrCodeBase64 = dataUrl.replace(/^data:image\/png;base64,/, "");
-    console.log(`[Baileys] PNG base64 gerado (${g.qrCodeBase64.length} chars)`);
+    console.log(`[Baileys] PNG base64 gerado (${g.qrCodeBase64.length} chars) org=${orgId}`);
     return g.qrCodeBase64;
   } catch (err) {
     console.error("[Baileys] Erro ao gerar PNG do QR:", err);
@@ -264,9 +273,9 @@ async function getQRCode(): Promise<string | null> {
  * Fotografia do QR para a API: imagem + idade. A UI usa `createdAt` para saber se o
  * QR é o mesmo que já estava na tela (evita toast repetido) e para mostrar a idade.
  */
-export async function getQrSnapshot() {
-  const g = getGlobal();
-  const qrCode = await getQRCode();
+export async function getQrSnapshot(orgId: string) {
+  const g = getState(orgId);
+  const qrCode = await getQRCode(orgId);
   return {
     qrCode,
     createdAt: qrCode ? g.qrCreatedAt : null,
@@ -280,11 +289,11 @@ export async function getQrSnapshot() {
   };
 }
 
-/** Espera (até `ms`) o primeiro QR Code aparecer ou a conexão abrir. */
-export async function waitForQr(ms: number): Promise<void> {
+/** Espera (até `ms`) o primeiro QR Code desta clínica aparecer ou a conexão abrir. */
+export async function waitForQr(orgId: string, ms: number): Promise<void> {
   const deadline = Date.now() + ms;
   while (Date.now() < deadline) {
-    const g = getGlobal();
+    const g = getState(orgId);
     if (g.qrCodeRaw || g.connectionState.status === "CONNECTED") return;
     await delay(250);
   }
@@ -302,14 +311,15 @@ export async function waitForQr(ms: number): Promise<void> {
  */
 async function saveConnectionState(orgId: string, status: string, phone?: string | null) {
   try {
+    const g = getState(orgId);
     await ingestConnection(orgId, {
-      state: toCanonicalConnectionState(status),
-      detail: getConnectionState().detail,
+      state: toCanonicalConnectionState(orgId, status),
+      detail: g.connectionState.detail,
       provider: providerName(),
-      jid: getGlobal().account?.jid ?? null,
-      lid: getGlobal().account?.lid ?? null,
-      phone: phone ?? getGlobal().account?.phone ?? null,
-      accountName: getGlobal().account?.name ?? null,
+      jid: g.account?.jid ?? null,
+      lid: g.account?.lid ?? null,
+      phone: phone ?? g.account?.phone ?? null,
+      accountName: g.account?.name ?? null,
     });
   } catch (err) {
     console.error("[Baileys] Erro ao salvar estado no banco:", err);
@@ -326,7 +336,7 @@ function providerName(): string {
  * `PENDING_QR` só é "Aguardando QR Code" quando existe um QR de verdade na memória; antes
  * disso é "Conectando", e a tela mostra o passo certo em vez de um QR que ainda não chegou.
  */
-function toCanonicalConnectionState(status: string): ConnectionState {
+function toCanonicalConnectionState(orgId: string, status: string): ConnectionState {
   switch (status) {
     case "CONNECTED":
       return "CONNECTED";
@@ -337,7 +347,7 @@ function toCanonicalConnectionState(status: string): ConnectionState {
     case "RECONNECT_REQUIRED":
       return "RECONNECT_REQUIRED";
     default:
-      return getGlobal().qrCodeRaw ? "WAITING_QR" : "CONNECTING";
+      return getState(orgId).qrCodeRaw ? "WAITING_QR" : "CONNECTING";
   }
 }
 
@@ -358,12 +368,9 @@ function reasonLabel(code: number | null | undefined) {
  * duplicação com o INSERT do nosso próprio envio é resolvida pela idempotência por
  * `providerMsgId` dentro do ingest.
  */
-async function processMessage(message: proto.IWebMessageInfo) {
+async function processMessage(orgId: string, message: proto.IWebMessageInfo) {
   try {
     if (!message.key?.remoteJid) return;
-
-    const orgId = getGlobal().orgId;
-    if (!orgId) return;
 
     const normalized = normalizeWebMessage(message);
     if (!normalized) return;
@@ -382,16 +389,16 @@ async function processMessage(message: proto.IWebMessageInfo) {
 
 // ─── Timers ────────────────────────────────────────────────────────────────
 
-function clearReconnectTimer() {
-  const g = getGlobal();
+function clearReconnectTimer(orgId: string) {
+  const g = getState(orgId);
   if (g.reconnectTimer) {
     clearTimeout(g.reconnectTimer);
     g.reconnectTimer = null;
   }
 }
 
-function clearQrWatchdog() {
-  const g = getGlobal();
+function clearQrWatchdog(orgId: string) {
+  const g = getState(orgId);
   if (g.qrWatchdog) {
     clearTimeout(g.qrWatchdog);
     g.qrWatchdog = null;
@@ -404,11 +411,11 @@ function clearQrWatchdog() {
  * apaga a sessão e recomeça do zero — garantindo um QR novo.
  */
 function armQrWatchdog(orgId: string) {
-  const g = getGlobal();
-  clearQrWatchdog();
+  const g = getState(orgId);
+  clearQrWatchdog(orgId);
   g.qrWatchdog = setTimeout(() => {
     g.qrWatchdog = null;
-    const state = getGlobal();
+    const state = getState(orgId);
     if (state.sock !== g.sock) return;
     if (state.connectionState.status === "CONNECTED" || state.qrCodeRaw) return;
     if (state.starting) return;
@@ -416,7 +423,7 @@ function armQrWatchdog(orgId: string) {
     // QR escaneado há pouco: o recomeço é com a credencial nova, nunca apagando ela.
     if (state.pairedRecently) {
       console.warn("[Baileys] ⏱️ Sem QR/abertura após parear; reiniciando mantendo a sessão.");
-      void restartSocket(g.orgId ?? orgId, "watchdog pós-pareamento", { wipe: false });
+      void restartSocket(state.orgId, "watchdog pós-pareamento", { wipe: false });
       return;
     }
 
@@ -429,14 +436,14 @@ function armQrWatchdog(orgId: string) {
 }
 
 function scheduleReconnect(orgId: string, delayMs: number) {
-  const g = getGlobal();
-  clearReconnectTimer();
+  const g = getState(orgId);
+  if (g.reconnectTimer) clearTimeout(g.reconnectTimer);
   g.reconnectTimer = setTimeout(() => {
     g.reconnectTimer = null;
-    const state = getGlobal();
-    // Nunca criamos um segundo socket enquanto já existe um vivo.
+    const state = getState(orgId);
+    // Nunca criamos um segundo socket desta clínica enquanto já existe um vivo.
     if (state.sock) {
-      console.log("[Baileys] Reconexão agendada cancelada: já existe um socket ativo.");
+      console.log(`[Baileys] Reconexão agendada cancelada: a clínica ${orgId} já tem socket ativo.`);
       return;
     }
     state.isConnecting = false;
@@ -452,34 +459,34 @@ function scheduleReconnect(orgId: string, delayMs: number) {
  * Se a sessão salva ficar muda (nem abre, nem manda QR), refazemos com sessão limpa.
  */
 export async function ensureQrOrConnected(orgId: string, opts: { freshQr?: boolean } = {}) {
-  const g = getGlobal();
+  const g = getState(orgId);
 
   if (opts.freshQr) {
     await restartWithFreshQr(orgId, "solicitado pelo usuário");
-    await waitForQr(12_000);
+    await waitForQr(orgId, 12_000);
     return;
   }
 
   if (g.connectionState.status === "CONNECTED") return;
 
   await initBaileys(orgId);
-  await waitForQr(12_000);
+  await waitForQr(orgId, 12_000);
 
-  const after = getGlobal();
+  const after = getState(orgId);
   if (after.qrCodeRaw || after.connectionState.status === "CONNECTED") return;
   if (!after.sock) return; // init falhou de forma explícita; o estado já diz o porquê
   if (after.pairedRecently) return; // QR já foi escaneado; apagar a credencial quebraria o login
 
   console.warn("[Baileys] Nenhum QR em 12s com a sessão salva. Refazendo com sessão limpa.");
   await restartWithFreshQr(orgId, "sessão salva não gerou QR");
-  await waitForQr(12_000);
+  await waitForQr(orgId, 12_000);
 }
 
 // ─── Socket ────────────────────────────────────────────────────────────────
 
-/** Encerra o socket atual e descarta seus listeners. Não apaga credenciais. */
-function teardownSocket() {
-  const g = getGlobal();
+/** Encerra o socket DESTA clínica e descarta seus listeners. Não apaga credenciais. */
+function teardownSocket(orgId: string) {
+  const g = getState(orgId);
   const current = g.sock;
   if (!current) return;
 
@@ -487,8 +494,8 @@ function teardownSocket() {
   g.generation += 1;
   g.sock = null;
 
-  clearQrWatchdog();
-  setQRCode(null);
+  clearQrWatchdog(orgId);
+  setQRCode(orgId, null);
 
   for (const [event, listener] of [...(current.__baileysListeners ?? [])]) {
     try {
@@ -509,9 +516,9 @@ function teardownSocket() {
  *                 (o WhatsApp manda reiniciar o socket e o login se conclui com a credencial nova).
  */
 async function restartSocket(orgId: string, source: string, opts: { wipe: boolean }) {
-  const g = getGlobal();
+  const g = getState(orgId);
   console.log(
-    `[Baileys] ♻️ Reiniciando socket (origem: ${source}, credenciais: ${opts.wipe ? "apagadas" : "mantidas"})`
+    `[Baileys] ♻️ Reiniciando socket da clínica ${orgId} (origem: ${source}, credenciais: ${opts.wipe ? "apagadas" : "mantidas"})`
   );
   // Se houver um init em andamento, deixe terminar: ele ainda está usando as
   // credenciais antigas em memória e seria substituído na sequência.
@@ -520,17 +527,17 @@ async function restartSocket(orgId: string, source: string, opts: { wipe: boolea
       await g.starting;
     } catch {}
   }
-  clearReconnectTimer();
+  clearReconnectTimer(orgId);
   g.reconnectAttempts = 0;
   g.isConnecting = false;
-  teardownSocket();
+  teardownSocket(orgId);
 
   if (opts.wipe) {
     await clearAuthDir(orgId);
     g.pairedRecently = false;
-    setConnectionState({ status: "PENDING_QR", detail: "Gerando um novo QR Code..." });
+    setConnectionState(orgId, { status: "PENDING_QR", detail: "Gerando um novo QR Code..." });
   } else {
-    setConnectionState({
+    setConnectionState(orgId, {
       status: "PENDING_QR",
       detail: "Aparelho pareado - concluindo o login no WhatsApp...",
     });
@@ -545,11 +552,11 @@ export async function restartWithFreshQr(orgId: string, source = "manual") {
 }
 
 async function openSocket(orgId: string) {
-  const g = getGlobal();
+  const g = getState(orgId);
 
   warnIfStorageIsEphemeral();
 
-  setConnectionState({
+  setConnectionState(orgId, {
     status: "PENDING_QR",
     detail: hasSavedSession(orgId)
       ? "Restaurando sessão conhecida..."
@@ -679,7 +686,7 @@ async function openSocket(orgId: string) {
 
   const onConnectionUpdate = async (update: any) => {
     const { connection, lastDisconnect, qr } = update;
-    const gnow = getGlobal();
+    const gnow = getState(orgId);
 
     if (gnow.generation !== generation) {
       console.log(`[Baileys] Ignorando evento de socket obsoleto (gen=${generation}, atual=${gnow.generation})`);
@@ -687,25 +694,25 @@ async function openSocket(orgId: string) {
     }
 
     console.log(
-      `[Baileys] connection.update → connection=${connection ?? "null"} qr=${qr ? `<${qr.length} chars>` : "null"} isNewLogin=${update.isNewLogin ? "SIM" : "não"}`
+      `[Baileys] connection.update (org=${orgId}) → connection=${connection ?? "null"} qr=${qr ? `<${qr.length} chars>` : "null"} isNewLogin=${update.isNewLogin ? "SIM" : "não"}`
     );
 
     // O QR foi escaneado e o aparelho foi pareado. Logo em seguida o WhatsApp fecha este
     // socket pedindo reinício (515): a próxima conexão tem que usar a credencial que
     // acabou de ser criada — apagá-la aqui é o que impedia a conexão de finalizar.
     if (update.isNewLogin) {
-      const g2 = getGlobal();
+      const g2 = getState(orgId);
       g2.pairedRecently = true;
       g2.reconnectAttempts = 0;
-      clearQrWatchdog();
-      setQRCode(null);
+      clearQrWatchdog(orgId);
+      setQRCode(orgId, null);
       console.log("[Baileys] 📲 Aparelho pareado! Gravando credenciais e concluindo o login...");
       try {
         await saveCreds();
       } catch (err) {
         console.error("[Baileys] Falha ao gravar as credenciais do pareamento:", err);
       }
-      setConnectionState({
+      setConnectionState(orgId, {
         status: "PENDING_QR",
         detail: "Aparelho pareado - concluindo o login no WhatsApp...",
       });
@@ -713,30 +720,61 @@ async function openSocket(orgId: string) {
     }
 
     if (qr) {
-      setQRCode(qr);
-      setConnectionState({
+      setQRCode(orgId, qr);
+      setConnectionState(orgId, {
         status: "PENDING_QR",
         detail: "QR Code gerado - escaneie com WhatsApp",
       });
       await saveConnectionState(orgId, "PENDING_QR");
       // A tela em frente enxerga o QR novo sem esperar o próximo poll (§3, §19).
       ingestQr(orgId, qr);
-      clearQrWatchdog();
-      console.log(`[Baileys] ✅ QR salvo em memória (${qr.length} chars)`);
+      clearQrWatchdog(orgId);
+      console.log(`[Baileys] ✅ QR salvo em memória (${qr.length} chars) org=${orgId}`);
       return;
     }
 
     if (connection === "open") {
-      const g2 = getGlobal();
+      const g2 = getState(orgId);
       g2.reconnectAttempts = 0;
       g2.lastStatusCode = null;
       g2.pairedRecently = false;
-      clearQrWatchdog();
-      clearReconnectTimer();
-      setConnectionState({ status: "CONNECTED", detail: "Conectado" });
-      setQRCode(null);
+      clearQrWatchdog(orgId);
+      clearReconnectTimer(orgId);
+      setConnectionState(orgId, { status: "CONNECTED", detail: "Conectado" });
+      setQRCode(orgId, null);
       const me = state.creds.me as { id?: string; lid?: string; name?: string } | undefined;
       const phone = me?.id ? jidNormalizedUser(me.id).replace(/\D/g, "") : null;
+
+      // Regra da plataforma: um número atende UMA clínica. Se este pareamento é de um número
+      // que outra clínica já usa, desfazemos o vínculo em vez de deixar as mensagens caírem
+      // em duas empresas. O nome da outra clínica não é exposto aqui.
+      const conflict = phone
+        ? await findOrganizationUsingPhone(phone, { excludeOrgId: orgId }).catch(() => null)
+        : null;
+      if (conflict) {
+        const detail =
+          "Este WhatsApp já está conectado em outra clínica. Cada número atende uma clínica só — use outro número.";
+        console.warn(
+          `[Baileys] org=${orgId} recusada: telefone ${phone} já pertence à org ${conflict.id}.`
+        );
+        g2.isConnecting = false;
+        g2.generation += 1;
+        g2.sock = null;
+        clearQrWatchdog(orgId);
+        clearReconnectTimer(orgId);
+        setConnectionState(orgId, { status: "ERROR", detail });
+        await saveConnectionState(orgId, "ERROR", phone);
+        // logout + limpeza: sem isso o socket seguiria recebendo as mensagens do número.
+        try {
+          await Promise.race([sock.logout().catch(() => {}), delay(LOGOUT_TIMEOUT_MS)]);
+        } catch {}
+        try {
+          sock.end(undefined);
+        } catch {}
+        await clearAuthDir(orgId);
+        return;
+      }
+
       g2.account = {
         jid: me?.id ? jidNormalizedUser(me.id) : null,
         lid: me?.lid ? String(me.lid) : null,
@@ -745,12 +783,14 @@ async function openSocket(orgId: string) {
       };
       await saveConnectionState(orgId, "CONNECTED", phone);
       g2.isConnecting = false;
-      console.log(`[Baileys] ✅ Conectado com sucesso! (${me?.name ?? "sem nome"} / ${phone ?? "?"})`);
+      console.log(
+        `[Baileys] ✅ Conectado com sucesso! org=${orgId} (${me?.name ?? "sem nome"} / ${phone ?? "?"})`
+      );
       return;
     }
 
     if (connection === "connecting") {
-      setConnectionState({
+      setConnectionState(orgId, {
         status: "PENDING_QR",
         detail: hasSavedSession(orgId)
           ? "Restaurando sessão conhecida..."
@@ -763,15 +803,15 @@ async function openSocket(orgId: string) {
     if (connection === "close") {
       const statusCode = (lastDisconnect?.error as any)?.output?.statusCode as number | undefined;
       const label = reasonLabel(statusCode);
-      const g2 = getGlobal();
+      const g2 = getState(orgId);
       g2.lastStatusCode = statusCode ?? null;
-      console.log(`[Baileys] ❌ Desconectado: ${label}`);
+      console.log(`[Baileys] ❌ Desconectado (org=${orgId}): ${label}`);
 
       // Este socket morreu; qualquer evento dele deixa de interessar.
       g2.generation += 1;
       g2.sock = null;
-      clearQrWatchdog();
-      setQRCode(null);
+      clearQrWatchdog(orgId);
+      setQRCode(orgId, null);
       try {
         sock.end(undefined);
       } catch {}
@@ -785,7 +825,7 @@ async function openSocket(orgId: string) {
       if (terminal) {
         // Banimento / incompatibilidade: insistir (ou apagar a pasta) não resolve.
         g2.isConnecting = false;
-        setConnectionState({
+        setConnectionState(orgId, {
           status: "ERROR",
           detail: `${label}. Resolva no WhatsApp do celular e clique em "Gerar novo QR".`,
         });
@@ -803,7 +843,7 @@ async function openSocket(orgId: string) {
         } catch (err) {
           console.error("[Baileys] Falha ao gravar credenciais no pós-pareamento:", err);
         }
-        setConnectionState({
+        setConnectionState(orgId, {
           status: "PENDING_QR",
           detail: "Aparelho pareado - concluindo o login no WhatsApp...",
         });
@@ -818,7 +858,7 @@ async function openSocket(orgId: string) {
         g2.reconnectAttempts = 0;
         g2.isConnecting = false;
         await clearAuthDir(orgId);
-        setConnectionState({
+        setConnectionState(orgId, {
           status: "PENDING_QR",
           detail: `Sessão antiga invalidada (${label}). Gerando novo QR Code...`,
         });
@@ -832,7 +872,7 @@ async function openSocket(orgId: string) {
       g2.isConnecting = false;
 
       if (attempt > MAX_RECONNECT_ATTEMPTS) {
-        setConnectionState({
+        setConnectionState(orgId, {
           status: "DISCONNECTED",
           detail: `${MAX_RECONNECT_ATTEMPTS} tentativas automáticas falharam (${label}). Clique em "Gerar novo QR Code".`,
         });
@@ -842,7 +882,7 @@ async function openSocket(orgId: string) {
       }
 
       const wait = RECONNECT_BASE_DELAY_MS * 2 ** (attempt - 1);
-      setConnectionState({
+      setConnectionState(orgId, {
         status: "PENDING_QR",
         detail: `Reconectando (${label}) — tentativa ${attempt}/${MAX_RECONNECT_ATTEMPTS}`,
       });
@@ -853,7 +893,7 @@ async function openSocket(orgId: string) {
   };
 
   const onCredsUpdate = () => {
-    if (getGlobal().generation !== generation) return;
+    if (getState(orgId).generation !== generation) return;
     void saveCreds().catch((err: any) =>
       console.error("[Baileys] Erro ao salvar credenciais:", err?.message ?? err)
     );
@@ -862,14 +902,11 @@ async function openSocket(orgId: string) {
   const onMessagesUpsert = async ({ messages, type }: any) => {
     if (type !== "notify") return;
     for (const msg of messages) {
-      await processMessage(msg);
+      await processMessage(orgId, msg);
     }
   };
 
   const onMessagesUpdate = async (updates: any) => {
-    const orgId = getGlobal().orgId;
-    if (!orgId) return;
-
     for (const raw of updates ?? []) {
       // O Baileys emite { key, update: { status } } — não o objeto inteiro.
       const key = raw?.key;
@@ -916,19 +953,18 @@ async function openSocket(orgId: string) {
 // ─── Init (single-flight) ──────────────────────────────────────────────────
 
 async function initBaileys(orgId: string) {
-  const g = getGlobal();
+  const g = getState(orgId);
 
   if (g.sock) {
-    console.log("[Baileys] Já existe um socket ativo — nada a fazer.");
+    console.log(`[Baileys] A clínica ${orgId} já tem socket ativo — nada a fazer.`);
     return;
   }
   if (g.starting) {
-    console.log("[Baileys] Inicialização em andamento — aguardando a mesma terminar.");
+    console.log(`[Baileys] Inicialização em andamento para a clínica ${orgId} — aguardando.`);
     return g.starting;
   }
 
   console.log(`[Baileys] initBaileys chamado para orgId=${orgId}`);
-  g.orgId = orgId;
 
   // Identificador desta inicialização: só ela pode limpar g.starting ao terminar.
   const startSeq = ++g.startSeq;
@@ -939,14 +975,15 @@ async function initBaileys(orgId: string) {
       await openSocket(orgId);
     } catch (err) {
       console.error("[Baileys] ❌ Erro na inicialização:", err);
-      setConnectionState({
+      setConnectionState(orgId, {
         status: "ERROR",
         detail: err instanceof Error ? err.message : "Erro desconhecido ao iniciar o Baileys",
       });
       g.isConnecting = false;
       await saveConnectionState(orgId, "ERROR").catch(() => {});
     } finally {
-      if (getGlobal().startSeq === startSeq) getGlobal().starting = null;
+      const current = getState(orgId);
+      if (current.startSeq === startSeq) current.starting = null;
     }
   })();
 
@@ -1209,8 +1246,8 @@ async function resolveTarget(sock: TrackedSocket, target: BaileysSendTarget) {
  * `phone` continua aceito para não quebrar quem já chama; `jid` é o caminho novo, usado pelo
  * serviço quando a conversa já tem um par mapeado (é o que permite falar com um @lid).
  */
-async function sendToTarget(target: BaileysSendTarget, text: string): Promise<SendResult> {
-  const currentSock = getGlobal().sock;
+async function sendToTarget(orgId: string, target: BaileysSendTarget, text: string): Promise<SendResult> {
+  const currentSock = getState(orgId).sock;
   if (!currentSock) {
     return { ok: false, error: "Baileys não conectado" };
   }
@@ -1277,10 +1314,6 @@ async function sendToTarget(target: BaileysSendTarget, text: string): Promise<Se
   }
 }
 
-async function sendBaileysMessage(phone: string, text: string): Promise<SendResult> {
-  return sendToTarget({ phone }, text);
-}
-
 /** Aceita http(s) e data URL — o anexo nunca passa pelo navegador do cliente. */
 async function bufferFromSource(url: string): Promise<Buffer> {
   if (url.startsWith("data:")) {
@@ -1298,6 +1331,7 @@ async function bufferFromSource(url: string): Promise<Buffer> {
  * WhatsApp do cliente.
  */
 async function sendMediaToTarget(
+  orgId: string,
   target: BaileysSendTarget,
   mediaUrl: string,
   caption?: string,
@@ -1305,7 +1339,7 @@ async function sendMediaToTarget(
   fileName?: string,
   mimeType?: string
 ): Promise<SendResult> {
-  const currentSock = getGlobal().sock;
+  const currentSock = getState(orgId).sock;
   if (!currentSock) {
     return { ok: false, error: "Baileys não conectado" };
   }
@@ -1365,11 +1399,24 @@ async function sendMediaToTarget(
 
 // ─── Provider class ────────────────────────────────────────────────────────
 
+/**
+ * Org da única sessão viva, para os métodos legados da interface (sem `orgId`).
+ * Com várias clínicas conectadas não há como adivinhar: devolvemos null e o chamador
+ * responde com erro, em vez de enviar pela clínica errada. O app usa `baileysSendText`
+ * (que sempre recebe a org); estes métodos só servem a scripts antigos.
+ */
+function onlyLiveSessionOrg(): string | null {
+  const live = [...getRegistry().sessions.values()].filter((s) => s.sock);
+  return live.length === 1 ? live[0].orgId : null;
+}
+
 export class BaileysProvider implements WhatsAppProvider {
   readonly name = "baileys";
 
   async sendMessage(phone: string, body: string): Promise<SendResult> {
-    return sendBaileysMessage(phone, body);
+    const orgId = onlyLiveSessionOrg();
+    if (!orgId) return { ok: false, error: "Nenhuma sessão única ativa: informe a clínica pelo CRM." };
+    return sendToTarget(orgId, { phone }, body);
   }
 
   async sendTemplate(_phone: string, _templateKey: string, _body: string): Promise<SendResult> {
@@ -1377,15 +1424,18 @@ export class BaileysProvider implements WhatsAppProvider {
   }
 
   async sendMedia(phone: string, mediaUrl: string, caption?: string): Promise<SendResult> {
-    return sendMediaToTarget({ phone }, mediaUrl, caption);
+    const orgId = onlyLiveSessionOrg();
+    if (!orgId) return { ok: false, error: "Nenhuma sessão única ativa: informe a clínica pelo CRM." };
+    return sendMediaToTarget(orgId, { phone }, mediaUrl, caption);
   }
 
   async checkConnection(): Promise<ProviderStatus> {
-    return getConnectionState();
+    const orgId = onlyLiveSessionOrg();
+    return orgId ? getConnectionState(orgId) : { status: "DISCONNECTED", detail: "Nenhuma sessão ativa" };
   }
 
   async getStatus(): Promise<ProviderStatus> {
-    return getConnectionState();
+    return this.checkConnection();
   }
 
   processWebhook(_raw: unknown): { externalId: string; status: string } | null {
@@ -1396,64 +1446,74 @@ export class BaileysProvider implements WhatsAppProvider {
     await initBaileys(orgId);
   }
 
+  /**
+   * Desconecta a clínica informada. Sem `orgId`, encerra todas as sessões vivas.
+   * Cada logout mexe só no estado da própria clínica — as outras continuam conectadas.
+   */
   async disconnect(orgId?: string): Promise<void> {
-    const g = getGlobal();
-    const targetOrgId = orgId ?? g.orgId;
+    const targets = orgId
+      ? [orgId]
+      : [...getRegistry().sessions.values()].map((s) => s.orgId);
 
-    clearReconnectTimer();
-    clearQrWatchdog();
-    g.reconnectAttempts = 0;
-    g.pairedRecently = false;
+    for (const targetOrgId of targets) {
+      await disconnectSession(targetOrgId);
+    }
+  }
+}
 
-    const current = g.sock;
-    if (current) {
-      // Aposenta o socket antes de mexer no estado, para que o close não dispare
-      // uma reconexão automática por cima do logout.
-      g.generation += 1;
-      g.sock = null;
+async function disconnectSession(targetOrgId: string) {
+  const g = getState(targetOrgId);
 
+  clearReconnectTimer(targetOrgId);
+  clearQrWatchdog(targetOrgId);
+  g.reconnectAttempts = 0;
+  g.pairedRecently = false;
+
+  const current = g.sock;
+  if (current) {
+    // Aposenta o socket antes de mexer no estado, para que o close não dispare
+    // uma reconexão automática por cima do logout.
+    g.generation += 1;
+    g.sock = null;
+
+    try {
+      // logout() derruba o pareamento no WhatsApp e pode travar se o socket já
+      // estiver meio morto — por isso o timeout curto e o catch.
+      await Promise.race([
+        current.logout().catch((err: any) =>
+          console.error("[Baileys] logout rejeitado:", err?.message ?? err)
+        ),
+        delay(LOGOUT_TIMEOUT_MS),
+      ]);
+    } catch (err) {
+      console.error("[Baileys] Erro ao fazer logout do socket:", err);
+    }
+
+    for (const [event, listener] of [...((current as any).__baileysListeners ?? [])]) {
       try {
-        // logout() derruba o pareamento no WhatsApp e pode travar se o socket já
-        // estiver meio morto — por isso o timeout curto e o catch.
-        await Promise.race([
-          current.logout().catch((err: any) =>
-            console.error("[Baileys] logout rejeitado:", err?.message ?? err)
-          ),
-          delay(LOGOUT_TIMEOUT_MS),
-        ]);
-      } catch (err) {
-        console.error("[Baileys] Erro ao fazer logout do socket:", err);
-      }
-
-      for (const [event, listener] of [...(current as any).__baileysListeners ?? []]) {
-        try {
-          (current.ev as any).off(event, listener);
-        } catch {}
-      }
-
-      try {
-        current.end(undefined);
+        (current.ev as any).off(event, listener);
       } catch {}
     }
 
-    setQRCode(null);
-    setConnectionState({ status: "DISCONNECTED", detail: "Desconectado manualmente" });
-    g.isConnecting = false;
-    g.startSeq += 1; // qualquer init em andamento perde a vez
-    g.starting = null;
+    try {
+      current.end(undefined);
+    } catch {}
+  }
 
-    if (targetOrgId) {
-      await clearAuthDir(targetOrgId);
-      try {
-        await db.whatsAppConnection.update({
-          where: { orgId: targetOrgId },
-          data: { status: "DISCONNECTED", phone: null },
-        });
-      } catch (err) {
-        console.error("[Baileys] Erro ao salvar desconexão no banco:", err);
-      }
-    }
-    g.orgId = null;
+  setQRCode(targetOrgId, null);
+  setConnectionState(targetOrgId, { status: "DISCONNECTED", detail: "Desconectado manualmente" });
+  g.isConnecting = false;
+  g.startSeq += 1; // qualquer init em andamento perde a vez
+  g.starting = null;
+
+  await clearAuthDir(targetOrgId);
+  try {
+    await db.whatsAppConnection.update({
+      where: { orgId: targetOrgId },
+      data: { status: "DISCONNECTED", phone: null },
+    });
+  } catch (err) {
+    console.error("[Baileys] Erro ao salvar desconexão no banco:", err);
   }
 }
 
@@ -1465,17 +1525,7 @@ export class BaileysProvider implements WhatsAppProvider {
  * estado fica PENDING_QR e a função retorna esse estado (sem esperar QR para sempre).
  */
 export async function ensureConnected(orgId: string, timeoutMs = 20_000): Promise<ProviderStatus> {
-  const g = getGlobal();
-
-  // Tenancy: existe UM socket por processo. Se ele pertence a outra barbearia, esta org está
-  // desconectada — devolver o estado global aqui foi o que fez uma org de teste aparecer
-  // "CONNECTED" e enviar mensagens pelo QR da org real.
-  if (g.sock && g.orgId && g.orgId !== orgId) {
-    return {
-      status: "DISCONNECTED",
-      detail: "O WhatsApp conectado pertence a outra clínica. Desconecte e conecte novamente aqui.",
-    };
-  }
+  const g = getState(orgId);
 
   if (g.connectionState.status !== "CONNECTED") {
     if (!g.sock) {
@@ -1497,7 +1547,7 @@ export async function ensureConnected(orgId: string, timeoutMs = 20_000): Promis
     }
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
-      const state = getGlobal();
+      const state = getState(orgId);
       if (state.connectionState.status === "CONNECTED") return state.connectionState;
       // QR pedido = a sessão salva não valeu mais; para de esperar e devolve o estado.
       if (state.qrCodeRaw) return state.connectionState;
@@ -1505,44 +1555,38 @@ export async function ensureConnected(orgId: string, timeoutMs = 20_000): Promis
     }
   }
 
-  return getConnectionState();
+  return getConnectionState(orgId);
 }
 
-export { getConnectionState, getQRCode, initBaileys, hasSavedSession, teardownSocket };
+export { initBaileys, hasSavedSession };
 
 // ─── Superfície usada pelo BarielsAdapter ───────────────────────────────────
 // O adapter é o único cliente destes exportadores. Eles existem para que a troca de socket
 // por HTTP (Evolution, Cloud API) não vaze para o resto do CRM.
 
-/** Org que é dona do socket agora — ou null quando não há socket. */
-export function currentOwnerOrgId(): string | null {
-  return getGlobal().orgId;
+/** Clínicas com socket vivo agora (diagnóstico). */
+export function currentOwnerOrgIds(): string[] {
+  return [...getRegistry().sessions.values()].filter((s) => s.sock).map((s) => s.orgId);
 }
 
-/** Conta pareada em memória (jid/lid/telefone/nome). */
-export function getAccountInfo() {
-  return getGlobal().account;
+/** Conta pareada em memória (jid/lid/telefone/nome) de uma clínica. */
+export function getAccountInfo(orgId: string) {
+  return getState(orgId).account;
 }
 
 /**
- * Guarda de tenancy: com um socket só por processo, um envio da org B pelo socket da org A
- * publicaria a mensagem da barbearia errada (aconteceu em 27/10 com orgs de teste).
+ * Guarda de tenancy: o envio usa SEMPRE o socket da própria clínica. Antes existia um socket
+ * só por processo e um envio da org B podia sair pelo número da org A (aconteceu em 27/10).
  */
 function assertSocketOrg(orgId: string) {
-  const g = getGlobal();
-  if (!g.sock) {
+  if (!getState(orgId).sock) {
     throw new Error("Baileys não conectado");
-  }
-  if (g.orgId && g.orgId !== orgId) {
-    throw new Error(
-      "O WhatsApp conectado pertence a outra clínica. Desconecte e conecte novamente nesta conta."
-    );
   }
 }
 
 export async function baileysSendText(orgId: string, target: BaileysSendTarget, text: string) {
   assertSocketOrg(orgId);
-  return sendToTarget(target, text);
+  return sendToTarget(orgId, target, text);
 }
 
 export async function baileysSendMedia(
@@ -1555,17 +1599,17 @@ export async function baileysSendMedia(
   mimeType?: string
 ) {
   assertSocketOrg(orgId);
-  return sendMediaToTarget(target, mediaUrl, caption, kind, fileName, mimeType);
+  return sendMediaToTarget(orgId, target, mediaUrl, caption, kind, fileName, mimeType);
 }
 
-/** Estado ao vivo + QR, numa chamada só — é o que o adapter usa em getStatus/getQr. */
+/** Estado ao vivo + QR da clínica, numa chamada só — é o que o adapter usa em getStatus/getQr. */
 export async function baileysSnapshot(orgId: string) {
-  const g = getGlobal();
+  const g = getState(orgId);
   return {
-    ownerOrgId: g.orgId,
+    ownerOrgId: g.sock ? orgId : null,
     hasSocket: Boolean(g.sock),
-    state: getConnectionState(),
-    qr: await getQrSnapshot(),
+    state: getConnectionState(orgId),
+    qr: await getQrSnapshot(orgId),
     account: g.account,
     reconnectAttempts: g.reconnectAttempts,
     lastStatusCode: g.lastStatusCode,
@@ -1573,6 +1617,6 @@ export async function baileysSnapshot(orgId: string) {
 }
 
 /** Uso interno de testes/diagnóstico. */
-export function getSock(): WASocket | null {
-  return getGlobal().sock;
+export function getSock(orgId: string): WASocket | null {
+  return getState(orgId).sock;
 }

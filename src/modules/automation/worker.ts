@@ -79,9 +79,9 @@ async function tick() {
       if (marked > 0) console.log(`[Worker] 🧹 ${marked} mensagem(es) presa(s) em QUEUED marcadas como erro.`);
     }
 
-    // 1) Retoma a sessão do WhatsApp que tem pareamento salvo (o estado em memória morre a
-    //    cada restart do Next; a credencial em disco não). Quem decide QUAL org reconecta é
-    //    o serviço, porque há um único socket por processo. Com acordadas de poucos segundos,
+    // 1) Retoma as sessões do WhatsApp que têm pareamento salvo (o estado em memória morre a
+    //    cada restart do Next; a credencial em disco não). Cada clínica tem a própria sessão,
+    //    então o serviço retoma todas — não só a primeira. Com acordadas de poucos segundos,
     //    isso fica limitado a uma tentativa por minuto — antes o tique era sempre de 60s.
     if (process.env.BAILEYS_AUTO_CONNECT !== "0" && Date.now() - st.lastAutoConnectAt >= AUTO_CONNECT_EVERY_MS) {
       st.lastAutoConnectAt = Date.now();
