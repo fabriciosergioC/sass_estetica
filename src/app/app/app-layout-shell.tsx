@@ -9,7 +9,7 @@ export function AppLayoutShell({ children }: { children: React.ReactNode }) {
   const isBooking = isBookingPreview(pathname);
 
   return (
-    <main className={`px-4 py-6 lg:px-8 ${isBooking ? "" : "lg:ml-64"}`}>
+    <main className={`px-4 py-6 lg:px-8 print:ml-0 print:px-0 print:py-0 ${isBooking ? "" : "lg:ml-64"}`}>
       {children}
     </main>
   );

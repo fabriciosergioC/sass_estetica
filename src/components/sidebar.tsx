@@ -93,7 +93,7 @@ export function Sidebar({ user }: { user: ShellUser }) {
         nada (e ainda empurrava o conteúdo da página para baixo).
       */}
       {comMenu && (
-        <div className="sticky top-0 z-40 flex items-center justify-between border-b border-zinc-800 bg-zinc-950/90 px-4 py-3 backdrop-blur lg:hidden">
+        <div className="sticky top-0 z-40 flex items-center justify-between border-b border-zinc-800 bg-zinc-950/90 px-4 py-3 backdrop-blur lg:hidden print:hidden">
           <button
             onClick={() => setOpen(!open)}
             className="rounded-lg p-2 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100"
@@ -111,12 +111,12 @@ export function Sidebar({ user }: { user: ShellUser }) {
       )}
 
       {comMenu && open && (
-        <div className="fixed inset-0 z-30 bg-black/60 lg:hidden" onClick={() => setOpen(false)} />
+        <div className="fixed inset-0 z-30 bg-black/60 lg:hidden print:hidden" onClick={() => setOpen(false)} />
       )}
 
       {comMenu && (
         <aside
-          className={`fixed inset-y-0 left-0 z-40 flex w-64 flex-col border-r border-zinc-800 bg-zinc-950 transition-transform lg:translate-x-0 ${
+          className={`fixed inset-y-0 left-0 z-40 flex w-64 flex-col border-r border-zinc-800 bg-zinc-950 transition-transform lg:translate-x-0 print:hidden ${
             open ? "translate-x-0" : "-translate-x-full"
           }`}
         >

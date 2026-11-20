@@ -82,6 +82,26 @@ export default function RelatoriosPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // Cabeçalho do papel: nome da clínica e hora da emissão. Ficam em estado (e não calculados no
+  // render) porque o componente é hidratado no cliente — data/hora no JSX do servidor e do
+  // navegador não batem e o React acusaria diferença de hidratação.
+  const [orgName, setOrgName] = useState<string | null>(null);
+  const [generatedAt, setGeneratedAt] = useState<string | null>(null);
+
+  useEffect(() => {
+    setGeneratedAt(
+      new Date().toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" })
+    );
+    fetch("/api/auth/session", { cache: "no-store" })
+      .then((res) => res.json())
+      .then((body) => {
+        if (typeof body?.session?.orgName === "string") setOrgName(body.session.orgName);
+      })
+      .catch(() => {
+        /* Sem nome da clínica o cabeçalho impresso cai no rótulo genérico. */
+      });
+  }, []);
+
   const applyPreset = useCallback((g: Granularity, id: string) => {
     const preset = PERIOD_PRESETS[g].find((p) => p.id === id);
     if (!preset) return;
@@ -138,30 +158,73 @@ export default function RelatoriosPage() {
   const buckets = report?.buckets ?? [];
   const variacao = report?.previous.variacaoPct ?? null;
 
+  /**
+   * Impressão em PDF: o navegador abre a caixa de impressão (destino "Salvar como PDF") já com
+   * a paleta clara de papel, sem menu/filtros e com o cabeçalho da clínica — tudo isso vem de
+   * `print:` nas classes e do bloco `@media print` de `globals.css`.
+   *
+   * O `document.title` vale como nome sugerido do arquivo no Chrome, então trocamos por
+   * "Clínica — Relatório — período" durante a impressão e devolvemos o original ao fechar.
+   */
+  const handlePrint = useCallback(() => {
+    const previous = document.title;
+    document.title = `${orgName ?? "Clínica"} — Relatório de faturamento — ${periodo}`;
+    const restore = () => {
+      document.title = previous;
+      window.removeEventListener("afterprint", restore);
+    };
+    window.addEventListener("afterprint", restore);
+    window.print();
+  }, [orgName, periodo]);
+
   return (
-    <div className="mx-auto max-w-5xl space-y-6">
-      <header className="flex flex-wrap items-end justify-between gap-3">
+    <div className="mx-auto max-w-5xl space-y-6 print:max-w-none print:space-y-4">
+      {/* Cabeçalho exclusivo do papel: no painel quem identifica a clínica é a sidebar. */}
+      <div className="hidden border-b border-zinc-400 pb-3 print:block">
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <p className="text-xs font-medium uppercase tracking-wide text-zinc-500">
+              Relatório de faturamento
+            </p>
+            <p className="text-xl font-semibold text-zinc-100">{orgName ?? "Clínica"}</p>
+            <p className="mt-1 text-sm text-zinc-400">{periodo}</p>
+          </div>
+          {generatedAt && <p className="text-xs text-zinc-500">Emitido em {generatedAt}</p>}
+        </div>
+      </div>
+
+      <header className="flex flex-wrap items-end justify-between gap-3 print:hidden">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Relatórios</h1>
           <p className="mt-1 text-sm text-zinc-500">Faturamento e atendimentos por período, com comparativo.</p>
         </div>
-        <div className="flex items-center gap-1 rounded-lg border border-zinc-800 bg-zinc-900/60 p-1">
-          {GRANULARITIES.map((g) => (
-            <button
-              key={g.id}
-              onClick={() => changeGranularity(g.id)}
-              className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
-                granularity === g.id ? "bg-gold-500 text-on-accent" : "text-zinc-400 hover:text-zinc-100"
-              }`}
-            >
-              {g.label}
-            </button>
-          ))}
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex items-center gap-1 rounded-lg border border-zinc-800 bg-zinc-900/60 p-1">
+            {GRANULARITIES.map((g) => (
+              <button
+                key={g.id}
+                onClick={() => changeGranularity(g.id)}
+                className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+                  granularity === g.id ? "bg-gold-500 text-on-accent" : "text-zinc-400 hover:text-zinc-100"
+                }`}
+              >
+                {g.label}
+              </button>
+            ))}
+          </div>
+          <Button
+            variant="outline"
+            onClick={handlePrint}
+            disabled={!report || loading}
+            title="Imprimir ou salvar em PDF"
+          >
+            Imprimir / PDF
+          </Button>
         </div>
       </header>
 
       {/* Filtro de período */}
-      <Card className="animate-fade-up space-y-3 p-4">
+      <Card className="animate-fade-up space-y-3 p-4 print:hidden">
         <div className="flex flex-wrap items-center gap-2">
           <div className="flex items-center gap-1">
             <Button variant="secondary" onClick={() => move(-1)} aria-label="Período anterior">
@@ -225,13 +288,13 @@ export default function RelatoriosPage() {
       </Card>
 
       {error && (
-        <Card className="p-4">
+        <Card className="p-4 print:hidden">
           <p className="text-sm text-red-400">{error}</p>
         </Card>
       )}
 
       {loading && !report && (
-        <div className="space-y-4">
+        <div className="space-y-4 print:hidden">
           <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
             {[0, 1, 2].map((i) => (
               <Card key={i} className="animate-pulse p-5">
@@ -250,7 +313,7 @@ export default function RelatoriosPage() {
         <div className={`space-y-6 transition-opacity ${loading ? "opacity-60" : "opacity-100"}`}>
           {/* KPIs do período filtrado */}
           <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-            <Card className="animate-fade-up border-gold-500/20 p-5">
+            <Card className="animate-fade-up border-gold-500/20 p-5 print:break-inside-avoid">
               <p className="text-sm text-zinc-500">Faturamento</p>
               <p className="mt-1 text-3xl font-bold tabular-nums text-zinc-100">
                 {formatBRL(report.total.faturamentoCents)}
@@ -265,14 +328,14 @@ export default function RelatoriosPage() {
                 )}
               </div>
             </Card>
-            <Card className="animate-fade-up p-5">
+            <Card className="animate-fade-up p-5 print:break-inside-avoid">
               <p className="text-sm text-zinc-500">Atendimentos concluídos</p>
               <p className="mt-1 text-3xl font-bold tabular-nums text-zinc-100">{report.total.atendimentos}</p>
               <p className="mt-2 text-xs text-zinc-500">
                 {report.previous.atendimentos} em {prevPeriodo}
               </p>
             </Card>
-            <Card className="animate-fade-up p-5">
+            <Card className="animate-fade-up p-5 print:break-inside-avoid">
               <p className="text-sm text-zinc-500">Ticket médio</p>
               <p className="mt-1 text-3xl font-bold tabular-nums text-zinc-100">
                 {formatBRL(report.total.ticketMedioCents)}
@@ -290,7 +353,7 @@ export default function RelatoriosPage() {
           ) : (
             <>
               <div className="grid gap-4 lg:grid-cols-2">
-                <Card className="animate-fade-up p-5">
+                <Card className="animate-fade-up p-5 print:break-inside-avoid">
                   <h2 className="mb-4 text-sm font-medium text-zinc-400">Evolução do faturamento</h2>
                   <div className="h-72 w-full">
                     <ResponsiveContainer width="100%" height="100%">
@@ -344,7 +407,7 @@ export default function RelatoriosPage() {
                   </div>
                 </Card>
 
-                <Card className="animate-fade-up p-5">
+                <Card className="animate-fade-up p-5 print:break-inside-avoid">
                   <h2 className="mb-4 text-sm font-medium text-zinc-400">Volume de atendimentos</h2>
                   <div className="h-72 w-full">
                     <ResponsiveContainer width="100%" height="100%">
@@ -386,6 +449,49 @@ export default function RelatoriosPage() {
                 </Card>
               </div>
 
+              {/*
+                Tabela só do papel. O gráfico é uma leitura rápida na tela, mas no PDF (A4) o que
+                serve para conferir e arquivar é o número linha a linha — e a tabela não depende do
+                recharts medir a largura da página, o que é imprevisível na impressão.
+              */}
+              <div className="hidden print:block">
+                <h2 className="mb-2 text-lg font-medium text-zinc-100">Detalhe por período</h2>
+                <table className="w-full border-collapse text-sm">
+                  <thead>
+                    <tr className="border-b border-zinc-400 text-left text-xs uppercase tracking-wide text-zinc-500">
+                      <th className="py-1.5 pr-2 font-medium">Período</th>
+                      <th className="px-2 py-1.5 text-right font-medium">Atendimentos</th>
+                      <th className="px-2 py-1.5 text-right font-medium">Ticket médio</th>
+                      <th className="py-1.5 pl-2 text-right font-medium">Faturamento</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {buckets.map((b) => (
+                      <tr key={b.key} className="border-b border-zinc-200">
+                        <td className="py-1.5 pr-2 text-zinc-200">{b.title}</td>
+                        <td className="px-2 py-1.5 text-right tabular-nums text-zinc-400">{b.atendimentos}</td>
+                        <td className="px-2 py-1.5 text-right tabular-nums text-zinc-400">
+                          {formatBRL(b.ticketMedioCents)}
+                        </td>
+                        <td className="py-1.5 pl-2 text-right font-medium tabular-nums text-zinc-100">
+                          {formatBRL(b.faturamentoCents)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot>
+                    <tr className="border-t-2 border-zinc-400 font-semibold">
+                      <td className="py-2 pr-2">Total</td>
+                      <td className="px-2 py-2 text-right tabular-nums">{report.total.atendimentos}</td>
+                      <td className="px-2 py-2 text-right tabular-nums">{formatBRL(report.total.ticketMedioCents)}</td>
+                      <td className="py-2 pl-2 text-right tabular-nums text-zinc-100">
+                        {formatBRL(report.total.faturamentoCents)}
+                      </td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+
               {/* Comparativo período a período — é aqui que o mês que fecha entra na série */}
               <div className="space-y-3">
                 <h2 className="text-lg font-medium text-zinc-100">Comparativo período a período</h2>
@@ -396,7 +502,7 @@ export default function RelatoriosPage() {
                     : null;
 
                   return (
-                    <Card key={b.key} className="animate-fade-up space-y-2 border-zinc-800 p-5">
+                    <Card key={b.key} className="animate-fade-up space-y-2 border-zinc-800 p-5 print:break-inside-avoid">
                       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-zinc-800 pb-3">
                         <div>
                           <p className="text-base font-semibold text-zinc-100">{b.title}</p>

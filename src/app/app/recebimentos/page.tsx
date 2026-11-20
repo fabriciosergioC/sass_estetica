@@ -106,6 +106,25 @@ export default function RecebimentosPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // Cabeçalho do papel (clínica + hora da emissão) — em estado para não divergir na hidratação,
+  // igual ao relatório de faturamento.
+  const [orgName, setOrgName] = useState<string | null>(null);
+  const [generatedAt, setGeneratedAt] = useState<string | null>(null);
+
+  useEffect(() => {
+    setGeneratedAt(
+      new Date().toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" })
+    );
+    fetch("/api/auth/session", { cache: "no-store" })
+      .then((res) => res.json())
+      .then((body) => {
+        if (typeof body?.session?.orgName === "string") setOrgName(body.session.orgName);
+      })
+      .catch(() => {
+        /* Sem nome da clínica o papel cai no rótulo genérico. */
+      });
+  }, []);
+
   const [dialog, setDialog] = useState<{ mode: "create" } | { mode: "edit"; receipt: Receipt } | null>(null);
   const [draft, setDraft] = useState({
     appointmentId: "",
@@ -281,9 +300,46 @@ export default function RecebimentosPage() {
   const pending = data?.pending ?? [];
   const isEditing = dialog?.mode === "edit";
 
+  const fmtDay = (key: string) => new Date(`${key}T12:00:00`).toLocaleDateString("pt-BR");
+  const periodoLabel =
+    range.from === range.to ? fmtDay(range.from) : `${fmtDay(range.from)} a ${fmtDay(range.to)}`;
+
+  /**
+   * Impressão em PDF do caixa: abre a caixa de impressão com a paleta de papel (branco),
+   * sem filtros/botões e com o cabeçalho da clínica. O nome do arquivo sugerido pelo Chrome
+   * vem do `document.title`, que volta ao original quando a caixa fecha.
+   */
+  const handlePrint = useCallback(() => {
+    const previous = document.title;
+    document.title = `${orgName ?? "Clínica"} — Recebimentos — ${periodoLabel}`;
+    const restore = () => {
+      document.title = previous;
+      window.removeEventListener("afterprint", restore);
+    };
+    window.addEventListener("afterprint", restore);
+    window.print();
+  }, [orgName, periodoLabel]);
+
   return (
-    <div className="mx-auto max-w-5xl space-y-6">
-      <header className="flex flex-wrap items-end justify-between gap-3">
+    <div className="mx-auto max-w-5xl space-y-6 print:max-w-none print:space-y-4">
+      {/* Cabeçalho exclusivo do papel */}
+      <div className="hidden border-b border-zinc-400 pb-3 print:block">
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <p className="text-xs font-medium uppercase tracking-wide text-zinc-500">
+              Relatório de recebimentos
+            </p>
+            <p className="text-xl font-semibold text-zinc-100">{orgName ?? "Clínica"}</p>
+            <p className="mt-1 text-sm text-zinc-400">
+              {periodoLabel}
+              {methodFilter ? ` · ${paymentMethodLabel(methodFilter)}` : " · todas as formas"}
+            </p>
+          </div>
+          {generatedAt && <p className="text-xs text-zinc-500">Emitido em {generatedAt}</p>}
+        </div>
+      </div>
+
+      <header className="flex flex-wrap items-end justify-between gap-3 print:hidden">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Recebimentos</h1>
           <p className="mt-1 text-sm text-zinc-500">
@@ -291,11 +347,21 @@ export default function RecebimentosPage() {
             aparecem como pendentes até você registrar a forma aqui ou pelo botão na própria Agenda.
           </p>
         </div>
-        <Button onClick={openCreate}>＋ Novo recebimento</Button>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            variant="outline"
+            onClick={handlePrint}
+            disabled={!data || loading}
+            title="Imprimir ou salvar em PDF"
+          >
+            Imprimir / PDF
+          </Button>
+          <Button onClick={openCreate}>＋ Novo recebimento</Button>
+        </div>
       </header>
 
       {/* Filtro de período e forma */}
-      <Card className="animate-fade-up space-y-3 p-4">
+      <Card className="animate-fade-up space-y-3 p-4 print:hidden">
         <div className="flex flex-wrap items-center gap-2">
           <label className="flex items-center gap-1.5 text-xs text-zinc-500">
             De
@@ -352,7 +418,7 @@ export default function RecebimentosPage() {
 
       {/* Totais por forma */}
       <div className="space-y-3">
-        <Card className="flex flex-wrap items-center justify-between gap-3 border-gold-500/30 bg-gold-500/[0.06] p-5">
+        <Card className="flex flex-wrap items-center justify-between gap-3 border-gold-500/30 bg-gold-500/[0.06] p-5 print:break-inside-avoid">
           <div>
             <p className="text-xs font-medium uppercase tracking-wide text-zinc-400">Total recebido no período</p>
             <p className="mt-1 text-3xl font-semibold text-gold-300">{formatBRL(totals?.totalCents ?? 0)}</p>
@@ -367,7 +433,7 @@ export default function RecebimentosPage() {
 
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
           {PAYMENT_METHODS.map((method) => (
-            <Card key={method.id} className="p-4">
+            <Card key={method.id} className="p-4 print:break-inside-avoid">
               <p className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-zinc-500">
                 <span aria-hidden>{method.icon}</span>
                 {method.label}
@@ -383,9 +449,9 @@ export default function RecebimentosPage() {
 
       {/* Lançamentos */}
       {error ? (
-        <Card className="border-red-500/30 bg-red-500/[0.06] p-4 text-sm text-red-300">{error}</Card>
+        <Card className="border-red-500/30 bg-red-500/[0.06] p-4 text-sm text-red-300 print:hidden">{error}</Card>
       ) : loading ? (
-        <Card className="animate-pulse p-6">
+        <Card className="animate-pulse p-6 print:hidden">
           <div className="h-4 w-1/3 rounded bg-zinc-800" />
           <div className="mt-3 h-3 w-2/3 rounded bg-zinc-800/70" />
         </Card>
@@ -423,7 +489,7 @@ export default function RecebimentosPage() {
                       </div>
                       <div className="flex items-center gap-3">
                         <span className="text-sm font-semibold text-amber-300">{formatBRL(item.amountCents)}</span>
-                        <Button variant="action" onClick={() => openCreateForPending(item)}>
+                        <Button variant="action" onClick={() => openCreateForPending(item)} className="print:hidden">
                           Registrar
                         </Button>
                       </div>
@@ -461,7 +527,7 @@ export default function RecebimentosPage() {
               const serviceName = receipt.appointment?.service?.name;
               const barberName = receipt.appointment?.barber?.name;
               return (
-                <li key={receipt.id} className="flex flex-wrap items-center justify-between gap-3 px-5 py-3">
+                <li key={receipt.id} className="flex flex-wrap items-center justify-between gap-3 px-5 py-3 print:break-inside-avoid">
                   <div className="min-w-0">
                     <p className="flex flex-wrap items-center gap-2 text-sm font-medium text-zinc-100">
                       {customerName}
@@ -479,7 +545,7 @@ export default function RecebimentosPage() {
                   </div>
                   <div className="flex items-center gap-3">
                     <span className="text-sm font-semibold text-zinc-100">{formatBRL(receipt.amountCents)}</span>
-                    <Button variant="ghost" onClick={() => openEdit(receipt)}>
+                    <Button variant="ghost" onClick={() => openEdit(receipt)} className="print:hidden">
                       Editar
                     </Button>
                   </div>

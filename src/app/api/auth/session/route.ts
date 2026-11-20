@@ -21,6 +21,17 @@ export async function GET() {
     else role = null;
   }
 
+  // Nome da clínica ativa: o cabeçalho de impressão dos relatórios sai em papel com a empresa
+  // no topo, e a página é client component — o valor do JWT pode estar velho, então lemos do banco.
+  let orgName = session.cachedOrgName ?? null;
+  if (!orgName && session.activeOrgId) {
+    const org = await db.organization.findUnique({
+      where: { id: session.activeOrgId },
+      select: { name: true },
+    });
+    orgName = org?.name ?? null;
+  }
+
   return NextResponse.json({
     session: {
       userId: session.userId,
@@ -29,6 +40,7 @@ export async function GET() {
       activeOrgId: session.activeOrgId,
       role,
       isSuperAdmin: session.isSuperAdmin,
+      orgName,
     },
   });
 }

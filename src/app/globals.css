@@ -190,3 +190,82 @@ input[type="time"]::-webkit-calendar-picker-indicator {
 .animate-fade-up {
   animation: fade-up 0.25s ease-out both;
 }
+
+/*
+ * ===========================================================================
+ * IMPRESSÃO / PDF
+ * ===========================================================================
+ *
+ * O painel inteiro é escuro (fundo #09090b, cards quase pretos). Impresso assim, sai uma folha
+ * preta e um relatório ilegível — e "imprimir em PDF" é o caminho normal para guardar/mandar o
+ * relatório. Então, em mídia de impressão, trocamos as variáveis do tema pelos MESMOS valores do
+ * `data-theme="light"` (é o único ponto de cor do projeto), forçamos fundo branco e tiramos
+ * sombras. Nenhuma tela precisa de classe especial para isso: as classes `zinc-*`/`gold-*` já
+ * leem essas variáveis.
+ *
+ * O que fica de fora da folha é decidido na própria página com `print:hidden` (menu lateral,
+ * filtros, botões, gráficos interativos) — aqui só cuidamos da cor e do papel.
+ */
+@media print {
+  :root {
+    color-scheme: light;
+
+    --accent-lift: #000000;
+    --accent-shade: #ffffff;
+    --color-on-accent: #0b0b0d;
+
+    --color-zinc-950: #ffffff;
+    --color-zinc-900: #ffffff;
+    --color-zinc-800: #e4e4e7;
+    --color-zinc-700: #b8b8bf;
+    --color-zinc-600: #6b6b73;
+    --color-zinc-500: #5a5a62;
+    --color-zinc-400: #47474e;
+    --color-zinc-300: #303036;
+    --color-zinc-200: #1d1d21;
+    --color-zinc-100: #101012;
+
+    --color-red-500: #ef4444;
+    --color-red-400: #dc2626;
+    --color-red-300: #b91c1c;
+    --color-red-200: #991b1b;
+    --color-red-950: #fef2f2;
+
+    --color-emerald-500: #10b981;
+    --color-emerald-400: #059669;
+    --color-emerald-200: #065f46;
+    --color-emerald-950: #ecfdf5;
+
+    --color-amber-500: #f59e0b;
+    --color-amber-400: #b45309;
+    --color-amber-300: #92400e;
+
+    --color-sky-500: #0ea5e9;
+    --color-sky-400: #0284c7;
+    --color-sky-200: #075985;
+    --color-sky-950: #f0f9ff;
+  }
+
+  html,
+  body {
+    background: #ffffff !important;
+    color: #101012 !important;
+  }
+
+  /* Sem sombra e sem animação no papel: sombra vira borrão de tinta. */
+  .shadow-lg,
+  .shadow-2xl,
+  .shadow-black\/20 {
+    box-shadow: none !important;
+  }
+  .animate-fade-up {
+    animation: none !important;
+  }
+
+  /* A4 com margem de 12mm; o rodapé do navegador (data/URL) já não sai desde 2021. */
+  @page {
+    size: A4;
+    margin: 12mm;
+  }
+}
+
