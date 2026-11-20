@@ -51,8 +51,13 @@ export async function findOrganizationUsingPhone(
     return false;
   }
 
+  // Só clínica com pelo menos um membro reserva número. Clínica sem membro é resto de
+  // cadastro interrompido (ninguém consegue entrar nela) e, se contasse, bloquearia para
+  // sempre o número de quem realmente usa — foi o que travou o pareamento do QR da Bela Face,
+  // que tinha uma "bela essencia" vazia com o mesmo telefone. As tabelas de conexão/contas
+  // do WhatsApp abaixo continuam valendo sempre, porque são prova de sessão real.
   const orgs = await client.organization.findMany({
-    where: otherOrg ? { id: otherOrg } : undefined,
+    where: { ...(otherOrg ? { id: otherOrg } : {}), members: { some: {} } },
     select: { id: true, name: true, phone: true, whatsapp: true },
   });
   const org = orgs.find((o) => uses(o.phone) || uses(o.whatsapp));
